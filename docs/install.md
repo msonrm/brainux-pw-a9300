@@ -19,7 +19,7 @@ sudo sh system/setup-stability.sh
 
 unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap が入ります。
 
-## 2. カーネル（音声ドライバ）
+## 2. カーネル（音声ドライバ・バックライト・蓋）
 
 PC で:
 
@@ -27,10 +27,14 @@ PC で:
 git clone https://github.com/brain-hackers/linux-brain
 cd linux-brain
 git checkout a9f534c7
-git apply ../brainux-sound-wifi-mucom88/kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch
+git apply ../brainux-pw-a9300/kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch
+git apply ../brainux-pw-a9300/kernel/0002-pwm-mxs-drive-inactive-level-before-stop.patch
+git apply ../brainux-pw-a9300/kernel/0003-brain-kbd-i2c-lid-switch-and-wakeup.patch
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build brain_defconfig
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build -j8 zImage dtbs modules
 ```
+
+0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）（[power.md](power.md)）。音だけでよければ 0001 だけでも動きます。
 
 `git apply` で当てると、カーネルの版は `6.1.70-ga9f534c7f53e-dirty` になります。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。
 
@@ -57,6 +61,16 @@ sudo alsactl store
 ```
 
 戻すときは `zImage.orig` と `imx28-pwa7200.dtb.orig` を元の名前に戻します。
+
+サスペンド（0002・0003 を当てたとき）:
+
+```sh
+sudo install -D -m 644 system/etc/systemd/sleep.conf.d/brain-s2idle.conf /etc/systemd/sleep.conf.d/brain-s2idle.conf
+sudo install -D -m 644 system/etc/systemd/logind.conf.d/brain-power-key.conf /etc/systemd/logind.conf.d/brain-power-key.conf
+sudo systemctl kill -s HUP systemd-logind
+```
+
+1 つ目は眠り方を s2idle にします（`deep` だと 1 秒ほどで起きてしまう）。次のサスペンドから効きます（`/sys/power/mem_sleep` は起動直後 `s2idle [deep]` で、systemd が眠るときに `[s2idle]` へ切り替えます）。2 つ目で「入/切」は、短く押すと眠る・長押しで電源オフになります（Brainux の既定は押すと電源オフ）。蓋を閉じるか「入/切」を押すと眠り、蓋を開けるかキーを押すと起きます。
 
 ## 3. 音楽ファイルを鳴らす
 

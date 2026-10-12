@@ -1,6 +1,8 @@
-# brainux-sound-wifi-mucom88
+# brainux-pw-a9300
 
-シャープの電子辞書 Brain **PW-A9300** で動く [Brainux](https://github.com/brain-hackers/buildbrain)（Debian 13 + Linux 6.1）に、次のものを足すための材料です。
+シャープの電子辞書 Brain **PW-A9300** で動く [Brainux](https://github.com/brain-hackers/buildbrain)（Debian 13 + Linux 6.1）を、ふだん使える機械にするための材料です。目標は Brainux そのものの改善（できたものは brain-hackers に還元したい）で、その上に MUCOM88 機やポメラのようなエディタといった「専用機」を載せることも視野に入れています。
+
+いま入っているもの:
 
 - **音**: 内蔵スピーカーを鳴らす ALSA ドライバ（音声 IC は Yamaha YMU818）
 - **Wi-Fi**: TP-Link TL-WN725N（RTL8188EUS）を安定して使うドライバ（Linux 6.6 の rtl8xxxu を 6.1 向けに外付けモジュール化）
@@ -16,13 +18,15 @@
 | 音（WAV / MP3） | 内蔵スピーカーで再生できる。プチノイズ・途切れなし。ヘッドホン経路は未確認 |
 | Wi-Fi | 電源付き USB ハブ + OTG ケーブル経由で、20 分の負荷試験を通過 |
 | MUCOM88 | サンプル曲 3 曲を、作りながら途切れなく再生できる。CPU 使用率は約 50% |
-| 電源（サスペンド・クロック・電池残量） | 未着手 |
+| サスペンド | 蓋を閉じるか「入/切」を短く押すと眠り、蓋を開けるかキーを押すと 1 秒以内に起きる（s2idle）。眠っている間の電池の減りは未測定 |
+| CPU クロック・電池残量 | 調査中。電池残量は 4 段階で読める（[docs/power.md](docs/power.md)） |
+| サブ液晶（キーボード下、240×120）・タッチ・ボタン | 表示・タッチ・ボタンのコードを確認（[docs/subpanel.md](docs/subpanel.md)）。MML の記号表として入力に使うのは未着手 |
 
 ## 中身
 
 | ディレクトリ | 内容 | ライセンス |
 |---|---|---|
-| [`kernel/`](kernel/) | linux-brain（a9f534c7）に当てる YMU818 ドライバのパッチ | GPL-2.0 |
+| [`kernel/`](kernel/) | linux-brain（a9f534c7）に当てるパッチ（YMU818 ドライバ、バックライトの消灯、蓋のスイッチとサスペンドからの起床） | GPL-2.0 |
 | [`kernel/rtl8xxxu66/`](kernel/rtl8xxxu66/) | Linux 6.6 の rtl8xxxu を取ってきて 6.1 向けに直すスクリプトとパッチ | GPL-2.0 |
 | [`tools/ymu818-fw/`](tools/ymu818-fw/) | 自分の Brain の WinCE から YMU818 の設定手順（ファームウェア）を取り出すツール | MIT |
 | [`userspace/`](userspace/) | ドライバなしの試し鳴らし、再生・診断・負荷試験のスクリプト | MIT |

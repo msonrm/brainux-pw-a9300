@@ -1,0 +1,171 @@
+From: brainux-pw-a9300
+Subject: [PATCH] Input: brain-kbd-i2c: report the lid as SW_LID; wake on keys and lid
+
+On PW-A9300 the keyboard MCU sends raw switch code 3 when the lid closes
+(on) and opens (off). The driver treated it as "LCD transforming to tablet"
+and dropped it. Add a DT property "lid-switch-code" that makes the driver
+report that code as SW_LID, and mark the PW-A9300 keyboard as a wakeup
+source so a key press or opening the lid wakes the system from s2idle.
+
+When the power key wakes the system, swallow that press until it is
+released, so that userspace (systemd-logind with HandlePowerKey=suspend)
+does not take it as a new request to suspend or, if held, to power off.
+
+diff --git a/drivers/input/keyboard/brain-kbd-i2c.c b/drivers/input/keyboard/brain-kbd-i2c.c
+index 9b6e563e5..6f07c7af4 100644
+--- a/drivers/input/keyboard/brain-kbd-i2c.c
++++ b/drivers/input/keyboard/brain-kbd-i2c.c
+@@ -14,6 +14,7 @@
+ #include <linux/input.h>
+ #include <linux/interrupt.h>
+ #include <linux/irq.h>
++#include <linux/jiffies.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+@@ -54,13 +55,53 @@ struct bk_i2c_data {
+ 	bool symbol_mode;
+ 	u32 symbol_keycode;
+ 	bool closing;
++	/* Switch code reported as SW_LID as is (clamshell models), or -1 */
++	int lid_sw_code;
++	/*
++	 * The power key press that wakes the system is swallowed until it is
++	 * released, so that userspace does not take it as a new request to
++	 * suspend (or, if held, to power off).
++	 */
++	bool wake_power_armed;
++	bool wake_power_held;
++	bool resumed;
++	unsigned long resumed_at;
+ };
+ 
++static bool swallow_wake_power(struct bk_i2c_data *kbd, u8 keycode)
++{
++	if (kbd->keymaps[BK_KEY(keycode)].normal_event_code != KEY_POWER) {
++		if (BK_IS_PRESSED(keycode))
++			kbd->wake_power_armed = false;
++		return false;
++	}
++
++	if (kbd->wake_power_held) {
++		if (!BK_IS_PRESSED(keycode))
++			kbd->wake_power_held = false;
++		return true;
++	}
++
++	if (kbd->wake_power_armed && BK_IS_PRESSED(keycode)) {
++		kbd->wake_power_armed = false;
++		kbd->wake_power_held = true;
++		dev_dbg(&kbd->cli->dev, "power key that woke the system ignored\n");
++		return true;
++	}
++
++	return false;
++}
++
+ static bool handle_switch(struct bk_i2c_data *kbd, u8 keycode)
+ {
+ 	bool sw_on = BK_SWITCH_ON(keycode);
+ 	unsigned int sw_code;
+ 
++	if (kbd->lid_sw_code >= 0 && BK_SW_CODE(keycode) == kbd->lid_sw_code) {
++		input_report_switch(kbd->idev, SW_LID, sw_on);
++		return true;
++	}
++
+ 	switch (BK_SW_CODE(keycode)) {
+ 	case BK_SW_LCD_TRANSFORMING_TO_TABLET:
+ 		if (!sw_on)
+@@ -157,6 +198,9 @@ static bool detect_key(struct bk_i2c_data *kbd, u8 keycode)
+ 		return true;
+ 	}
+ 
++	if (swallow_wake_power(kbd, keycode))
++		return true;
++
+ 	if (kbd->symbol_mode)
+ 		return handle_symbol_key(kbd, keycode);
+ 	else
+@@ -169,6 +213,11 @@ static irqreturn_t bk_i2c_irq_handler(int irq, void *devid)
+ 	s32 raw;
+ 	u8 n, k1, k2, k3;
+ 
++	/* Woken by something else (e.g. the lid): stop waiting for the key */
++	if (kbd->wake_power_armed && kbd->resumed &&
++	    time_after(jiffies, kbd->resumed_at + HZ))
++		kbd->wake_power_armed = false;
++
+ 	raw = i2c_smbus_read_word_swapped(kbd->cli, BK_CMD_KEYCODE);
+ 	if (raw < 0) {
+ 		dev_err(&kbd->cli->dev, "failed to read keycode: %d\n", raw);
+@@ -231,6 +280,7 @@ static int bk_i2c_probe(struct i2c_client *cli, const struct i2c_device_id *id)
+ {
+ 	struct bk_i2c_data *kbd;
+ 	int i, err, cells, len, offset;
++	u32 val;
+ 	u32 brain_keycode, kernel_keycode;
+ 
+ 	if (!i2c_check_functionality(cli->adapter, I2C_FUNC_SMBUS_BYTE)) {
+@@ -248,6 +298,11 @@ static int bk_i2c_probe(struct i2c_client *cli, const struct i2c_device_id *id)
+ 		kbd->symbol_keycode = 0x19;
+ 	}
+ 
++	if (of_property_read_u32(cli->dev.of_node, "lid-switch-code", &val))
++		kbd->lid_sw_code = -1;
++	else
++		kbd->lid_sw_code = val;
++
+ 	cells = 2;
+ 	if (!of_get_property(cli->dev.of_node, "keymap", &len)) {
+ 		dev_err(&cli->dev, "DT node has no keymap\n");
+@@ -395,6 +450,27 @@ static int bk_i2c_probe(struct i2c_client *cli, const struct i2c_device_id *id)
+ 	return 0;
+ }
+ 
++static int bk_i2c_suspend(struct device *dev)
++{
++	struct bk_i2c_data *kbd = i2c_get_clientdata(to_i2c_client(dev));
++
++	kbd->wake_power_armed = device_may_wakeup(dev);
++	kbd->wake_power_held = false;
++	kbd->resumed = false;
++	return 0;
++}
++
++static int bk_i2c_resume(struct device *dev)
++{
++	struct bk_i2c_data *kbd = i2c_get_clientdata(to_i2c_client(dev));
++
++	kbd->resumed_at = jiffies;
++	kbd->resumed = true;
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(bk_i2c_pm_ops, bk_i2c_suspend, bk_i2c_resume);
++
+ static const struct i2c_device_id bk_i2c_id_table[] = {
+ 	{ BRAIN_KBD_I2C_DEV_NAME, 0 },
+ 	{ /* sentinel */ },
+@@ -411,6 +487,7 @@ static struct i2c_driver bk_i2c_driver = {
+ 	.driver =  {
+ 		.name = BRAIN_KBD_I2C_DEV_NAME,
+ 		.of_match_table = of_match_ptr(bk_i2c_of_match),
++		.pm = pm_sleep_ptr(&bk_i2c_pm_ops),
+ 	},
+ 	.probe = bk_i2c_probe,
+ 	.id_table = bk_i2c_id_table,
+diff --git a/arch/arm/boot/dts/imx28-pwa7200.dts b/arch/arm/boot/dts/imx28-pwa7200.dts
+--- a/arch/arm/boot/dts/imx28-pwa7200.dts
++++ b/arch/arm/boot/dts/imx28-pwa7200.dts
+@@ -56,6 +56,10 @@ &slcd {
+ 
+ &keyboard_i2c_2g {
+ 	status = "okay";
++	/* Wake from suspend on keys and the lid (checked on PW-A9300) */
++	wakeup-source;
++	/* The keyboard MCU sends switch code 3 when the lid closes / opens (PW-A9300) */
++	lid-switch-code = <3>;
+ 	symbol-keycode = <0x0c>;  /* Page Down */
+ 	keymap =
+ 		<0x01 KEY_POWER>,     /* Power On / Off */
