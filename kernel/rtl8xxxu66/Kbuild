@@ -1,0 +1,5 @@
+# Linux 6.6 の rtl8xxxu を 6.1 の外付けモジュール rtl8xxxu66 として作る
+obj-m := rtl8xxxu66.o
+rtl8xxxu66-y := rtl8xxxu_core.o rtl8xxxu_8192e.o rtl8xxxu_8723b.o \
+		rtl8xxxu_8723a.o rtl8xxxu_8192c.o rtl8xxxu_8188f.o \
+		rtl8xxxu_8188e.o rtl8xxxu_8710b.o rtl8xxxu_8192f.o

@@ -1,0 +1,28 @@
+Build the Linux 6.6 rtl8xxxu (which supports RTL8188EU) as an out-of-tree
+module for the Brainux 6.1 kernel.
+
+- 6.1 mac80211 has no ieee80211_handle_wake_tx_queue (added in 6.2).
+  Without .wake_tx_queue, mac80211 uses the legacy TX path.
+- Rename the driver to rtl8xxxu66 so that it can coexist with the
+  built-in 6.1 rtl8xxxu (which does not know RTL8188EU).
+
+--- a/rtl8xxxu_core.c
++++ b/rtl8xxxu_core.c
+@@ -32,7 +32,7 @@
+ #include "rtl8xxxu.h"
+ #include "rtl8xxxu_regs.h"
+ 
+-#define DRIVER_NAME "rtl8xxxu"
++#define DRIVER_NAME "rtl8xxxu66"
+ 
+ int rtl8xxxu_debug;
+ static bool rtl8xxxu_ht40_2g;
+@@ -7344,7 +7344,7 @@
+ 
+ static const struct ieee80211_ops rtl8xxxu_ops = {
+ 	.tx = rtl8xxxu_tx,
+-	.wake_tx_queue = ieee80211_handle_wake_tx_queue,
++	/* 6.1 has no ieee80211_handle_wake_tx_queue; mac80211 falls back to the legacy TX path */
+ 	.add_interface = rtl8xxxu_add_interface,
+ 	.remove_interface = rtl8xxxu_remove_interface,
+ 	.config = rtl8xxxu_config,

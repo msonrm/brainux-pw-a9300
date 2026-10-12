@@ -1,0 +1,117 @@
+diff --git a/src/dummy/osdep_dummy.cpp b/src/dummy/osdep_dummy.cpp
+index 1d2a6ba..458cb3e 100644
+--- a/src/dummy/osdep_dummy.cpp
++++ b/src/dummy/osdep_dummy.cpp
+@@ -3,6 +3,12 @@
+ 
+ #include <stdio.h>
+ #include "osdep_dummy.h"
++#include <signal.h>
++
++static volatile sig_atomic_t s_break_flag = 0;
++static void s_signal_handler(int) {
++	s_break_flag = 1;
++}
+ 
+ OsDependentDummy::OsDependentDummy()
+ {
+@@ -117,7 +123,7 @@ int OsDependentDummy::KillFile(const char *filename)
+ 	return 0;
+ }
+ 
+-int OsDependentSdl::GetStatus(int option)
++int OsDependentDummy::GetStatus(int option)
+ {
+ 	// OsDep内部パラメーター読み込みhub
+ 	//
+@@ -125,3 +131,15 @@ int OsDependentSdl::GetStatus(int option)
+ }
+ 
+ 
++
++bool OsDependentDummy::SetBreakHook()
++{
++	signal(SIGINT, s_signal_handler);
++	signal(SIGTERM, s_signal_handler);
++	return true;
++}
++
++bool OsDependentDummy::GetBreakStatus()
++{
++	return s_break_flag != 0;
++}
+diff --git a/src/dummy/osdep_dummy.h b/src/dummy/osdep_dummy.h
+index 9c4fb30..a349942 100644
+--- a/src/dummy/osdep_dummy.h
++++ b/src/dummy/osdep_dummy.h
+@@ -52,6 +52,10 @@ public:
+ 	int GetDirectory(char *buf, int size);
+ 	int ChangeDirectory(const char *dir);
+ 	int KillFile(const char *filename);
++
++	// ブレーク(Ctrl+C)
++	bool SetBreakHook();
++	bool GetBreakStatus();
+ };
+ 
+ #endif
+diff --git a/src/utils/wavwrite.cpp b/src/utils/wavwrite.cpp
+index e8a44b6..06c1537 100644
+--- a/src/utils/wavwrite.cpp
++++ b/src/utils/wavwrite.cpp
+@@ -1,6 +1,9 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
++#ifndef _WIN32
++#include <unistd.h>
++#endif
+ 
+ #include "wavwrite.h"
+ 
+@@ -8,6 +11,7 @@ WavWriter::WavWriter()
+ {
+   fp = NULL;
+   HeaderOut = false;
++  Stream = false;
+ 
+   TotalSamples = 0;
+   Frequency = 0;
+@@ -32,6 +36,16 @@ void WavWriter::SetFormat(int rate, int bits, int channels)
+ 
+ bool WavWriter::Open(const char *filename)
+ {
++#ifndef _WIN32
++  if (strcmp(filename, "-") == 0) {
++    // 標準出力は PCM 専用にし、以後のメッセージ (printf/puts) は標準エラーへ回す
++    int pcmfd = dup(1);
++    dup2(2, 1);
++    fp = fdopen(pcmfd, "wb");
++    Stream = true;
++    return fp != NULL;
++  }
++#endif
+   fp = fopen(filename, "wb");
+   return fp != NULL;
+ }
+@@ -47,7 +61,7 @@ void WavWriter::Close(void)
+ void WavWriter::WriteHeader()
+ {
+   HeaderOut = true;
+-  if (fp == NULL) return;
++  if (fp == NULL || Stream) return;
+ 
+   unsigned char hdr[0x80];
+ 
+diff --git a/src/utils/wavwrite.h b/src/utils/wavwrite.h
+index c300ad4..6a48aaf 100644
+--- a/src/utils/wavwrite.h
++++ b/src/utils/wavwrite.h
+@@ -23,6 +23,7 @@ public:
+ private:
+   FILE *fp;
+   bool HeaderOut;
++  bool Stream;   // "-" を開いたとき: ヘッダなしの生 PCM を標準出力へ流す
+ 
+   int TotalSamples;
+   int Frequency;

@@ -1,0 +1,9 @@
+[Unit]
+Description=Log memory/load/wifi every 10s (freeze diagnosis)
+
+[Service]
+ExecStart=/usr/local/bin/brain-watch.sh
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,782 @@
+diff --git a/arch/arm/boot/dts/imx28-pwa7200.dts b/arch/arm/boot/dts/imx28-pwa7200.dts
+index 48bb8a1a6..3a0cccadf 100644
+--- a/arch/arm/boot/dts/imx28-pwa7200.dts
++++ b/arch/arm/boot/dts/imx28-pwa7200.dts
+@@ -159,3 +159,44 @@ &buzzer_cold {
+ &buzzer {
+ 	status = "okay";
+ };
++
++/*
++ * Audio: Yamaha YMU818 on I2C0 (0x3a), PCM from SAIF0 (I2S, 44.1kHz, MCLK 512fs).
++ * Found by emulating the WinCE ymu818_wavdev.dll of PW-A9300. Other models in
++ * this family may carry a different amplifier; only PW-A9300 has been checked.
++ */
++&pinctrl {
++	ymu818_pins: ymu818@0 {
++		reg = <0>;
++		fsl,pinmux-ids = <
++			MX28_PAD_SPDIF__GPIO_3_27	/* reset, active low */
++			MX28_PAD_SSP2_SS1__GPIO_2_20	/* headphone detect, low when plugged */
++		>;
++	};
++};
++
++&sgtl5000 {
++	status = "disabled";
++};
++
++&i2c0 {
++	ymu818: codec@3a {
++		compatible = "yamaha,ymu818";
++		reg = <0x3a>;
++		#sound-dai-cells = <0>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&ymu818_pins>;
++		reset-gpios = <&gpio3 27 GPIO_ACTIVE_LOW>;
++		hp-det-gpios = <&gpio2 20 GPIO_ACTIVE_LOW>;
++		firmware-name = "ymu818-brain.bin";
++	};
++};
++
++/ {
++	sound {
++		compatible = "fsl,mxs-audio-ymu818";
++		model = "brain-ymu818";
++		saif-controllers = <&saif0>;
++		audio-codec = <&ymu818>;
++	};
++};
+diff --git a/arch/arm/configs/brain_defconfig b/arch/arm/configs/brain_defconfig
+index 0dbda6d85..387b2fd8e 100644
+--- a/arch/arm/configs/brain_defconfig
++++ b/arch/arm/configs/brain_defconfig
+@@ -157,6 +157,7 @@ CONFIG_SND_USB_AUDIO=y
+ CONFIG_SND_SOC=y
+ CONFIG_SND_MXS_SOC=y
+ CONFIG_SND_SOC_MXS_SGTL5000=y
++CONFIG_SND_SOC_MXS_YMU818=y
+ CONFIG_USB=y
+ CONFIG_USB_OTG=y
+ CONFIG_USB_EHCI_HCD=y
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index f177251a1..202a65230 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -2181,4 +2181,13 @@ config SND_SOC_LPASS_TX_MACRO
+ 	select SND_SOC_LPASS_MACRO_COMMON
+ 	tristate "Qualcomm TX Macro in LPASS(Low Power Audio SubSystem)"
+ 
++config SND_SOC_YMU818
++	tristate "Yamaha YMU818 CODEC"
++	depends on I2C
++	select FW_LOADER
++	help
++	  Enable support for the Yamaha YMU818 audio CODEC used in SHARP
++	  Brain PW-A9300. The register sequences are loaded from a firmware
++	  file extracted from the device's own WinCE driver.
++
+ endmenu
+diff --git a/sound/soc/codecs/Makefile b/sound/soc/codecs/Makefile
+index b1c25189e..c3ca11354 100644
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -345,6 +345,7 @@ snd-soc-wm9713-objs := wm9713.o
+ snd-soc-wm-hubs-objs := wm_hubs.o
+ snd-soc-wsa881x-objs := wsa881x.o
+ snd-soc-wsa883x-objs := wsa883x.o
++snd-soc-ymu818-objs := ymu818.o
+ snd-soc-zl38060-objs := zl38060.o
+ snd-soc-rpmsg-wm8960-objs := rpmsg_wm8960.o
+ snd-soc-rpmsg-wm8960-i2c-objs := rpmsg_wm8960_i2c.o
+@@ -710,6 +711,7 @@ obj-$(CONFIG_SND_SOC_WM_ADSP)	+= snd-soc-wm-adsp.o
+ obj-$(CONFIG_SND_SOC_WM_HUBS)	+= snd-soc-wm-hubs.o
+ obj-$(CONFIG_SND_SOC_WSA881X)	+= snd-soc-wsa881x.o
+ obj-$(CONFIG_SND_SOC_WSA883X)	+= snd-soc-wsa883x.o
++obj-$(CONFIG_SND_SOC_YMU818)	+= snd-soc-ymu818.o
+ obj-$(CONFIG_SND_SOC_ZL38060)	+= snd-soc-zl38060.o
+ obj-$(CONFIG_SND_SOC_RPMSG_WM8960)	+= snd-soc-rpmsg-wm8960.o
+ obj-$(CONFIG_SND_SOC_RPMSG_WM8960_I2C)	+= snd-soc-rpmsg-wm8960-i2c.o
+diff --git a/sound/soc/codecs/ymu818.c b/sound/soc/codecs/ymu818.c
+new file mode 100644
+index 000000000..b2f4a2436
+--- /dev/null
++++ b/sound/soc/codecs/ymu818.c
+@@ -0,0 +1,514 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Yamaha YMU818 codec driver
++ *
++ * Used in SHARP Brain PW-A9300. The register programming sequences are not in
++ * this driver: they come from a firmware file that each user extracts from the
++ * WinCE driver of their own device. The firmware is loaded on the first
++ * playback, when the root filesystem is available.
++ *
++ * Firmware format (little endian):
++ *   "YMU818SQ" u16 version(=1) u16 nsect
++ *   section: u8 id, u8 reserved, u16 nops, ops...
++ *   op: 1 WRITE    u16 reg, u16 len, u8 data[len]  (one I2C transaction)
++ *       2 READ     u16 reg
++ *       3 WAIT_SET u16 reg, u8 mask
++ *       4 WAIT_CLR u16 reg, u8 mask
++ *       5 DELAY    u16 ms
++ */
++
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/slab.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <asm/unaligned.h>
++
++#define YMU818_FW_MAGIC		"YMU818SQ"
++#define YMU818_FW_VERSION	1
++#define YMU818_FW_DEFAULT	"ymu818-brain.bin"
++
++enum ymu818_section_id {
++	YMU818_SEC_INIT = 1,
++	YMU818_SEC_START_SPK,
++	YMU818_SEC_STOP_SPK,
++	YMU818_SEC_AMP_ON_SPK,
++	YMU818_SEC_AMP_OFF_SPK,
++	YMU818_SEC_START_HP,
++	YMU818_SEC_STOP_HP,
++	YMU818_SEC_AMP_ON_HP,
++	YMU818_SEC_AMP_OFF_HP,
++	YMU818_SEC_MAX,
++};
++
++enum ymu818_op {
++	YMU818_OP_WRITE = 1,
++	YMU818_OP_READ,
++	YMU818_OP_WAIT_SET,
++	YMU818_OP_WAIT_CLR,
++	YMU818_OP_DELAY,
++};
++
++/* Speaker volume: 0x20 | step, step 0..27. 0x20 alone is silent. */
++#define YMU818_REG_SPK_VOL	0x025
++#define YMU818_SPK_VOL_BASE	0x20
++#define YMU818_SPK_VOL_MAX	27
++#define YMU818_SPK_VOL_DEFAULT	12
++
++#define YMU818_WAIT_TRIES	200
++
++struct ymu818_section {
++	const u8 *ops;
++	size_t len;
++	unsigned int nops;
++};
++
++struct ymu818_priv {
++	struct i2c_client *i2c;
++	struct gpio_desc *reset;
++	struct gpio_desc *hp_det;
++	const char *fw_name;
++	const struct firmware *fw;
++	struct ymu818_section sec[YMU818_SEC_MAX];
++	struct mutex lock;	/* protects the chip state below */
++	bool inited;
++	bool running;
++	bool hp;
++	unsigned int spk_vol;
++};
++
++/*
++ * Register addresses are sent 7 bits at a time, low bits first. The byte
++ * with bit 7 set ends the address, so 0x00..0x7f take one byte.
++ */
++static int ymu818_addr(unsigned int reg, u8 *buf)
++{
++	if (reg < 0x80) {
++		buf[0] = 0x80 | reg;
++		return 1;
++	}
++	buf[0] = reg & 0x7f;
++	buf[1] = 0x80 | (reg >> 7);
++	return 2;
++}
++
++static int ymu818_write(struct ymu818_priv *ymu, unsigned int reg,
++			const u8 *data, size_t len)
++{
++	u8 *buf;
++	int n, ret;
++
++	buf = kmalloc(len + 2, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++	n = ymu818_addr(reg, buf);
++	memcpy(buf + n, data, len);
++	ret = i2c_master_send(ymu->i2c, buf, n + len);
++	kfree(buf);
++	if (ret < 0)
++		return ret;
++	return ret == n + len ? 0 : -EIO;
++}
++
++static int ymu818_read(struct ymu818_priv *ymu, unsigned int reg, u8 *val)
++{
++	u8 addr[2];
++	struct i2c_msg msgs[2] = {
++		{ .addr = ymu->i2c->addr, .flags = 0, .buf = addr },
++		{ .addr = ymu->i2c->addr, .flags = I2C_M_RD, .len = 1, .buf = val },
++	};
++	int ret;
++
++	msgs[0].len = ymu818_addr(reg, addr);
++	ret = i2c_transfer(ymu->i2c->adapter, msgs, 2);
++	if (ret < 0)
++		return ret;
++	return ret == 2 ? 0 : -EIO;
++}
++
++static int ymu818_wait(struct ymu818_priv *ymu, unsigned int reg, u8 mask,
++		       bool set)
++{
++	int i, ret;
++	u8 val = 0;
++
++	for (i = 0; i < YMU818_WAIT_TRIES; i++) {
++		ret = ymu818_read(ymu, reg, &val);
++		if (ret)
++			return ret;
++		if (set ? (val & mask) == mask : !(val & mask))
++			return 0;
++		usleep_range(1000, 1500);
++	}
++	dev_err(&ymu->i2c->dev, "timeout waiting for reg %03x bits %02x %s (now %02x)\n",
++		reg, mask, set ? "set" : "clear", val);
++	return -ETIMEDOUT;
++}
++
++static int ymu818_run(struct ymu818_priv *ymu, enum ymu818_section_id id)
++{
++	const struct ymu818_section *sec = &ymu->sec[id];
++	const u8 *p = sec->ops;
++	unsigned int i, reg, len;
++	int ret = 0;
++	u8 val;
++
++	for (i = 0; i < sec->nops && !ret; i++) {
++		reg = get_unaligned_le16(p + 1);
++		switch (p[0]) {
++		case YMU818_OP_WRITE:
++			len = get_unaligned_le16(p + 3);
++			ret = ymu818_write(ymu, reg, p + 5, len);
++			p += 5 + len;
++			break;
++		case YMU818_OP_READ:
++			ret = ymu818_read(ymu, reg, &val);
++			p += 3;
++			break;
++		case YMU818_OP_WAIT_SET:
++		case YMU818_OP_WAIT_CLR:
++			ret = ymu818_wait(ymu, reg, p[3], p[0] == YMU818_OP_WAIT_SET);
++			p += 4;
++			break;
++		case YMU818_OP_DELAY:
++			if (reg < 20)
++				usleep_range(reg * 1000, reg * 1000 + 500);
++			else
++				msleep(reg);
++			p += 3;
++			break;
++		}
++	}
++	if (ret)
++		dev_err(&ymu->i2c->dev, "section %d failed at op %u: %d\n", id, i, ret);
++	return ret;
++}
++
++/* Check every op against the firmware size so ymu818_run() can trust it. */
++static int ymu818_parse_fw(struct ymu818_priv *ymu)
++{
++	const u8 *p = ymu->fw->data, *end = p + ymu->fw->size;
++	unsigned int nsect, i, j, id, nops;
++	const u8 *start;
++
++	if (ymu->fw->size < 12 || memcmp(p, YMU818_FW_MAGIC, 8) ||
++	    get_unaligned_le16(p + 8) != YMU818_FW_VERSION)
++		goto bad;
++	nsect = get_unaligned_le16(p + 10);
++	p += 12;
++
++	for (i = 0; i < nsect; i++) {
++		if (end - p < 4)
++			goto bad;
++		id = p[0];
++		nops = get_unaligned_le16(p + 2);
++		p += 4;
++		start = p;
++		for (j = 0; j < nops; j++) {
++			size_t n;
++
++			if (end - p < 3)
++				goto bad;
++			switch (p[0]) {
++			case YMU818_OP_WRITE:
++				if (end - p < 5)
++					goto bad;
++				n = 5 + get_unaligned_le16(p + 3);
++				break;
++			case YMU818_OP_READ:
++			case YMU818_OP_DELAY:
++				n = 3;
++				break;
++			case YMU818_OP_WAIT_SET:
++			case YMU818_OP_WAIT_CLR:
++				n = 4;
++				break;
++			default:
++				goto bad;
++			}
++			if (end - p < n)
++				goto bad;
++			p += n;
++		}
++		if (id > 0 && id < YMU818_SEC_MAX) {
++			ymu->sec[id].ops = start;
++			ymu->sec[id].len = p - start;
++			ymu->sec[id].nops = nops;
++		}
++	}
++
++	for (i = YMU818_SEC_INIT; i < YMU818_SEC_MAX; i++) {
++		if (!ymu->sec[i].nops) {
++			dev_err(&ymu->i2c->dev, "%s: section %u missing\n", ymu->fw_name, i);
++			return -EINVAL;
++		}
++	}
++	return 0;
++bad:
++	dev_err(&ymu->i2c->dev, "%s: malformed firmware\n", ymu->fw_name);
++	return -EINVAL;
++}
++
++/* Load the firmware and run the init sequence. MCLK must be running. */
++static int ymu818_power_on(struct ymu818_priv *ymu)
++{
++	int ret;
++
++	if (ymu->inited)
++		return 0;
++
++	if (!ymu->fw) {
++		ret = request_firmware(&ymu->fw, ymu->fw_name, &ymu->i2c->dev);
++		if (ret)
++			return ret;
++		ret = ymu818_parse_fw(ymu);
++		if (ret) {
++			release_firmware(ymu->fw);
++			ymu->fw = NULL;
++			return ret;
++		}
++	}
++
++	/* Same reset pulse as the WinCE driver: high, low for 20ms, high */
++	if (ymu->reset) {
++		gpiod_set_value_cansleep(ymu->reset, 0);
++		usleep_range(10000, 11000);
++		gpiod_set_value_cansleep(ymu->reset, 1);
++		msleep(20);
++		gpiod_set_value_cansleep(ymu->reset, 0);
++	}
++
++	ret = ymu818_run(ymu, YMU818_SEC_INIT);
++	if (ret)
++		return ret;
++	ymu->inited = true;
++	return 0;
++}
++
++static int ymu818_set_spk_vol(struct ymu818_priv *ymu)
++{
++	u8 v = YMU818_SPK_VOL_BASE | ymu->spk_vol;
++
++	return ymu818_write(ymu, YMU818_REG_SPK_VOL, &v, 1);
++}
++
++static int ymu818_start(struct ymu818_priv *ymu)
++{
++	int ret;
++
++	ret = ymu818_power_on(ymu);
++	if (ret)
++		return ret;
++
++	/* The WinCE driver picks the output path when playback starts */
++	ymu->hp = ymu->hp_det && gpiod_get_value_cansleep(ymu->hp_det) > 0;
++	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_START_HP : YMU818_SEC_START_SPK);
++	if (ret)
++		return ret;
++	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_ON_HP : YMU818_SEC_AMP_ON_SPK);
++	if (ret)
++		return ret;
++	if (!ymu->hp) {
++		ret = ymu818_set_spk_vol(ymu);
++		if (ret)
++			return ret;
++	}
++	ymu->running = true;
++	return 0;
++}
++
++static void ymu818_stop(struct ymu818_priv *ymu)
++{
++	ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_OFF_HP : YMU818_SEC_AMP_OFF_SPK);
++	ymu818_run(ymu, ymu->hp ? YMU818_SEC_STOP_HP : YMU818_SEC_STOP_SPK);
++	ymu->running = false;
++}
++
++static int ymu818_prepare(struct snd_pcm_substream *substream,
++			  struct snd_soc_dai *dai)
++{
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(dai->component);
++	int ret = 0;
++
++	mutex_lock(&ymu->lock);
++	if (!ymu->running) {
++		ret = ymu818_start(ymu);
++		/* The chip may be half started: reset and init again next time */
++		if (ret)
++			ymu->inited = false;
++	}
++	mutex_unlock(&ymu->lock);
++	return ret;
++}
++
++static void ymu818_shutdown(struct snd_pcm_substream *substream,
++			    struct snd_soc_dai *dai)
++{
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(dai->component);
++
++	mutex_lock(&ymu->lock);
++	if (ymu->running)
++		ymu818_stop(ymu);
++	mutex_unlock(&ymu->lock);
++}
++
++static int ymu818_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	/* SAIF0 is the clock provider; the WinCE driver only uses I2S */
++	if ((fmt & SND_SOC_DAIFMT_FORMAT_MASK) != SND_SOC_DAIFMT_I2S ||
++	    (fmt & SND_SOC_DAIFMT_INV_MASK) != SND_SOC_DAIFMT_NB_NF ||
++	    (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) != SND_SOC_DAIFMT_CBC_CFC)
++		return -EINVAL;
++	return 0;
++}
++
++static const struct snd_soc_dai_ops ymu818_dai_ops = {
++	.prepare	= ymu818_prepare,
++	.shutdown	= ymu818_shutdown,
++	.set_fmt	= ymu818_set_fmt,
++};
++
++static struct snd_soc_dai_driver ymu818_dai = {
++	.name = "ymu818-hifi",
++	.playback = {
++		.stream_name	= "Playback",
++		.channels_min	= 2,
++		.channels_max	= 2,
++		/* the coefficients in the firmware are made for 44.1kHz */
++		.rates		= SNDRV_PCM_RATE_44100,
++		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
++	},
++	.ops = &ymu818_dai_ops,
++};
++
++static int ymu818_spk_vol_info(struct snd_kcontrol *kcontrol,
++			       struct snd_ctl_elem_info *uinfo)
++{
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 1;
++	uinfo->value.integer.min = 0;
++	uinfo->value.integer.max = YMU818_SPK_VOL_MAX;
++	return 0;
++}
++
++static int ymu818_spk_vol_get(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(c);
++
++	ucontrol->value.integer.value[0] = ymu->spk_vol;
++	return 0;
++}
++
++static int ymu818_spk_vol_put(struct snd_kcontrol *kcontrol,
++			      struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(c);
++	long v = ucontrol->value.integer.value[0];
++	int ret = 0;
++
++	if (v < 0 || v > YMU818_SPK_VOL_MAX)
++		return -EINVAL;
++	mutex_lock(&ymu->lock);
++	if (v == ymu->spk_vol) {
++		mutex_unlock(&ymu->lock);
++		return 0;
++	}
++	ymu->spk_vol = v;
++	if (ymu->running && !ymu->hp)
++		ret = ymu818_set_spk_vol(ymu);
++	mutex_unlock(&ymu->lock);
++	return ret ? ret : 1;
++}
++
++static const struct snd_kcontrol_new ymu818_controls[] = {
++	{
++		.iface	= SNDRV_CTL_ELEM_IFACE_MIXER,
++		.name	= "Speaker Playback Volume",
++		.info	= ymu818_spk_vol_info,
++		.get	= ymu818_spk_vol_get,
++		.put	= ymu818_spk_vol_put,
++	},
++};
++
++static const struct snd_soc_component_driver ymu818_component = {
++	.controls		= ymu818_controls,
++	.num_controls		= ARRAY_SIZE(ymu818_controls),
++	.endianness		= 1,
++};
++
++static int ymu818_i2c_probe(struct i2c_client *i2c)
++{
++	struct device *dev = &i2c->dev;
++	struct ymu818_priv *ymu;
++	u8 id;
++	int ret;
++
++	ymu = devm_kzalloc(dev, sizeof(*ymu), GFP_KERNEL);
++	if (!ymu)
++		return -ENOMEM;
++	ymu->i2c = i2c;
++	ymu->spk_vol = YMU818_SPK_VOL_DEFAULT;
++	mutex_init(&ymu->lock);
++	i2c_set_clientdata(i2c, ymu);
++
++	/* Keep the chip out of reset; it is pulsed before the init sequence */
++	ymu->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ymu->reset))
++		return dev_err_probe(dev, PTR_ERR(ymu->reset), "reset gpio\n");
++	ymu->hp_det = devm_gpiod_get_optional(dev, "hp-det", GPIOD_IN);
++	if (IS_ERR(ymu->hp_det))
++		return dev_err_probe(dev, PTR_ERR(ymu->hp_det), "hp-det gpio\n");
++
++	ymu->fw_name = YMU818_FW_DEFAULT;
++	of_property_read_string(dev->of_node, "firmware-name", &ymu->fw_name);
++
++	ret = ymu818_read(ymu, 0x000, &id);
++	if (ret)
++		return dev_err_probe(dev, ret, "no response at %#x\n", i2c->addr);
++	dev_info(dev, "YMU818 found, reg 0x000 = %02x\n", id);
++
++	return devm_snd_soc_register_component(dev, &ymu818_component, &ymu818_dai, 1);
++}
++
++static void ymu818_i2c_remove(struct i2c_client *i2c)
++{
++	struct ymu818_priv *ymu = i2c_get_clientdata(i2c);
++
++	release_firmware(ymu->fw);
++}
++
++static const struct of_device_id ymu818_of_match[] = {
++	{ .compatible = "yamaha,ymu818" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ymu818_of_match);
++
++static const struct i2c_device_id ymu818_i2c_id[] = {
++	{ "ymu818", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, ymu818_i2c_id);
++
++static struct i2c_driver ymu818_i2c_driver = {
++	.driver = {
++		.name = "ymu818",
++		.of_match_table = ymu818_of_match,
++	},
++	.probe_new	= ymu818_i2c_probe,
++	.remove		= ymu818_i2c_remove,
++	.id_table	= ymu818_i2c_id,
++};
++module_i2c_driver(ymu818_i2c_driver);
++
++MODULE_DESCRIPTION("Yamaha YMU818 codec driver");
++MODULE_LICENSE("GPL");
++MODULE_FIRMWARE(YMU818_FW_DEFAULT);
+diff --git a/sound/soc/mxs/Kconfig b/sound/soc/mxs/Kconfig
+index 402ef1ee7..f93a618ab 100644
+--- a/sound/soc/mxs/Kconfig
++++ b/sound/soc/mxs/Kconfig
+@@ -19,4 +19,12 @@ config SND_SOC_MXS_SGTL5000
+ 	  Say Y if you want to add support for SoC audio on an MXS board with
+ 	  a sgtl5000 codec.
+ 
++config SND_SOC_MXS_YMU818
++	tristate "SoC Audio support for MXS boards with YMU818"
++	depends on I2C
++	select SND_SOC_YMU818
++	help
++	  Say Y if you want to add support for SoC audio on an MXS board with
++	  a Yamaha YMU818 codec on SAIF0, such as SHARP Brain PW-A9300.
++
+ endif	# SND_MXS_SOC
+diff --git a/sound/soc/mxs/Makefile b/sound/soc/mxs/Makefile
+index ab0a9a553..be3584d62 100644
+--- a/sound/soc/mxs/Makefile
++++ b/sound/soc/mxs/Makefile
+@@ -9,3 +9,7 @@ obj-$(CONFIG_SND_MXS_SOC) += snd-soc-mxs.o snd-soc-mxs-pcm.o
+ snd-soc-mxs-sgtl5000-objs := mxs-sgtl5000.o
+ 
+ obj-$(CONFIG_SND_SOC_MXS_SGTL5000) += snd-soc-mxs-sgtl5000.o
++
++snd-soc-mxs-ymu818-objs := mxs-ymu818.o
++
++obj-$(CONFIG_SND_SOC_MXS_YMU818) += snd-soc-mxs-ymu818.o
+diff --git a/sound/soc/mxs/mxs-ymu818.c b/sound/soc/mxs/mxs-ymu818.c
+new file mode 100644
+index 000000000..ba21bb4f3
+--- /dev/null
++++ b/sound/soc/mxs/mxs-ymu818.c
+@@ -0,0 +1,128 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * ASoC machine driver for MXS boards with a Yamaha YMU818 on SAIF0
++ * (SHARP Brain PW-A9300). Based on mxs-sgtl5000.c.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <sound/pcm.h>
++#include <sound/soc.h>
++
++#include "mxs-saif.h"
++
++/* The YMU818 PLL runs from MCLK = 512fs; the WinCE driver uses 44.1kHz only */
++#define MXS_YMU818_RATE		44100
++#define MXS_YMU818_MCLK_FS	512
++
++static int mxs_ymu818_hw_params(struct snd_pcm_substream *substream,
++				struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	unsigned int mclk = MXS_YMU818_MCLK_FS * params_rate(params);
++	int ret;
++
++	ret = snd_soc_dai_set_sysclk(cpu_dai, MXS_SAIF_MCLK, mclk, 0);
++	if (ret)
++		dev_err(cpu_dai->dev, "failed to set mclk to %u Hz\n", mclk);
++	return ret;
++}
++
++static const struct snd_soc_ops mxs_ymu818_ops = {
++	.hw_params = mxs_ymu818_hw_params,
++};
++
++SND_SOC_DAILINK_DEFS(hifi_tx,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "ymu818-hifi")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static struct snd_soc_dai_link mxs_ymu818_dai = {
++	.name		= "HiFi Tx",
++	.stream_name	= "HiFi Playback",
++	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
++			  SND_SOC_DAIFMT_CBC_CFC,
++	.ops		= &mxs_ymu818_ops,
++	.playback_only	= true,
++	SND_SOC_DAILINK_REG(hifi_tx),
++};
++
++static struct snd_soc_card mxs_ymu818 = {
++	.name		= "mxs_ymu818",
++	.owner		= THIS_MODULE,
++	.dai_link	= &mxs_ymu818_dai,
++	.num_links	= 1,
++};
++
++static int mxs_ymu818_probe(struct platform_device *pdev)
++{
++	struct snd_soc_card *card = &mxs_ymu818;
++	struct device_node *np = pdev->dev.of_node;
++	struct device_node *saif_np, *codec_np;
++	int ret;
++
++	saif_np = of_parse_phandle(np, "saif-controllers", 0);
++	codec_np = of_parse_phandle(np, "audio-codec", 0);
++	if (!saif_np || !codec_np) {
++		dev_err(&pdev->dev, "phandle missing or invalid\n");
++		of_node_put(codec_np);
++		of_node_put(saif_np);
++		return -EINVAL;
++	}
++
++	mxs_ymu818_dai.codecs->name = NULL;
++	mxs_ymu818_dai.codecs->of_node = codec_np;
++	mxs_ymu818_dai.cpus->dai_name = NULL;
++	mxs_ymu818_dai.cpus->of_node = saif_np;
++	mxs_ymu818_dai.platforms->name = NULL;
++	mxs_ymu818_dai.platforms->of_node = saif_np;
++	of_node_put(codec_np);
++	of_node_put(saif_np);
++
++	/*
++	 * Keep MCLK running from SAIF0: the YMU818 needs it for its PLL while
++	 * the init and start sequences run, as in the WinCE driver.
++	 */
++	ret = mxs_saif_get_mclk(0, MXS_YMU818_MCLK_FS * MXS_YMU818_RATE,
++				MXS_YMU818_RATE);
++	if (ret) {
++		dev_err(&pdev->dev, "failed to get mclk\n");
++		return ret;
++	}
++
++	card->dev = &pdev->dev;
++	ret = devm_snd_soc_register_card(&pdev->dev, card);
++	if (ret) {
++		mxs_saif_put_mclk(0);
++		return dev_err_probe(&pdev->dev, ret, "snd_soc_register_card failed\n");
++	}
++	return 0;
++}
++
++static int mxs_ymu818_remove(struct platform_device *pdev)
++{
++	mxs_saif_put_mclk(0);
++	return 0;
++}
++
++static const struct of_device_id mxs_ymu818_dt_ids[] = {
++	{ .compatible = "fsl,mxs-audio-ymu818", },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, mxs_ymu818_dt_ids);
++
++static struct platform_driver mxs_ymu818_audio_driver = {
++	.driver = {
++		.name = "mxs-ymu818",
++		.of_match_table = mxs_ymu818_dt_ids,
++	},
++	.probe = mxs_ymu818_probe,
++	.remove = mxs_ymu818_remove,
++};
++module_platform_driver(mxs_ymu818_audio_driver);
++
++MODULE_DESCRIPTION("MXS ALSA SoC machine driver for YMU818");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:mxs-ymu818");
