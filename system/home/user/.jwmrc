@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<JWM>
+    <!-- Brainux's settings, plus the Brain keys below -->
+    <Include>/etc/jwm/system.jwmrc</Include>
+
+    <!-- Home key (F14 in the keymap, XF86Launch5 in X): the root menu -->
+    <Key key="XF86Launch5">root:1</Key>
+</JWM>

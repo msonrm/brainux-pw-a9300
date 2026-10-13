@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Turn the sub panel touch (mxs-lradc-ts) into a touchpad and buttons (run as root).
+"""Turn the sub panel touch (mxs-lradc-ts) into a touchpad and buttons, and
+take the printed buttons beside the main display off its touch panel (run as root).
 
-Grabs the touch device so X no longer sees it, and feeds a uinput mouse instead.
+Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse instead.
 - Displayed area: relative pointer. Tap = left click, long press = right click.
 - Printed buttons on the right edge: volume up/down (ALSA "Speaker"),
   backlight (cycles the main display brightness, the sub panel follows),
   clear (Esc).
+- Main display (SX8654): also grabbed. A touch that starts on the display is
+  passed on unchanged through a uinput touchscreen, so X calibrates it as
+  before. A touch that starts on the printed buttons left and right of the
+  display is taken as that button (MAIN_KEYS): the left column sends
+  Home / Page Up / Page Down / End, the right column is not assigned yet.
 - A narrow strip at the right edge of the sub panel shows the volume, the
   brightness and the battery, each next to its printed button.
 Needs uinput.ko (kernel/uinput). Raw coordinates are in docs/subpanel.md.
@@ -15,7 +21,8 @@ Usage: subpaneld.py [-v]
 """
 import fcntl, mmap, os, re, select, signal, struct, subprocess, sys, time
 
-TOUCH = "/dev/input/event0"
+TOUCH = "mxs-lradc-ts"                  # input device names
+MAIN_TOUCH = "SX8654 I2C Touchscreen"
 FB = "/dev/fb1"
 BACKLIGHT = "/sys/class/backlight/backlight@0"        # main display, 0-7
 SUB_BACKLIGHT = "/sys/class/backlight/backlight@1"    # sub panel, 0-3
@@ -39,6 +46,15 @@ START = 4                           # sub panel px from the press point before m
 # pointer gain (screen px per sub panel px) by finger speed (sub panel px/s)
 SLOW, SLOW_GAIN = 30, 1.0
 FAST, FAST_GAIN = 300, 3.0
+# Main display, raw: the display is x 237-3627 (X calibration); printed
+# buttons are left of MAIN_LEFT_X and right of MAIN_RIGHT_X (the display edges),
+# split by y.
+MAIN_LEFT_X, MAIN_RIGHT_X = 237, 3627
+MAIN_LEFT = [(3000, "prev_heading"), (2000, "page_up"), (1050, "page_down"),
+             (-1, "next_heading")]          # 前見出 ↑ ↓ 次見出
+MAIN_RIGHT = [(3450, "handwriting"), (2960, "kana_keys"), (2460, "memo"),
+              (1950, "back"), (1400, "enter"), (790, "text_larger"),
+              (-1, "text_smaller")]         # 手書き大 50音キー 暗記メモ 戻る 検索/決定 文字大 小
 TAP_TIME = 0.35
 LONG_TIME = 0.6
 
@@ -46,8 +62,14 @@ EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
 ABS_X, ABS_Y, BTN_TOUCH = 0, 1, 0x14a
 REL_X, REL_Y = 0, 1
 BTN_LEFT, BTN_RIGHT, KEY_ESC = 0x110, 0x111, 1
+KEY_HOME, KEY_PAGEUP, KEY_END, KEY_PAGEDOWN = 102, 104, 107, 109
+# main display buttons that send a key (the others are not assigned yet)
+MAIN_KEYS = {"prev_heading": KEY_HOME, "page_up": KEY_PAGEUP,
+             "page_down": KEY_PAGEDOWN, "next_heading": KEY_END}
 EVIOCGRAB = 0x40044590
 UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_RELBIT = 0x40045564, 0x40045565, 0x40045566
+UI_SET_ABSBIT, UI_SET_PROPBIT = 0x40045567, 0x4004556e
+INPUT_PROP_DIRECT = 1
 UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
 
 
@@ -61,7 +83,7 @@ class Mouse:
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
         for ev in (EV_SYN, EV_KEY, EV_REL):
             fcntl.ioctl(self.fd, UI_SET_EVBIT, ev)
-        for key in (BTN_LEFT, BTN_RIGHT, KEY_ESC):
+        for key in (BTN_LEFT, BTN_RIGHT, KEY_ESC, *MAIN_KEYS.values()):
             fcntl.ioctl(self.fd, UI_SET_KEYBIT, key)
         for rel in (REL_X, REL_Y):
             fcntl.ioctl(self.fd, UI_SET_RELBIT, rel)
@@ -94,6 +116,93 @@ class Mouse:
     def close(self):
         fcntl.ioctl(self.fd, UI_DEV_DESTROY)
         os.close(self.fd)
+
+
+def find_event(name):
+    """/dev/input/eventN of the input device with this name."""
+    with open("/proc/bus/input/devices") as f:
+        for block in f.read().split("\n\n"):
+            if f'N: Name="{name}"' in block:
+                return "/dev/input/" + re.search(r"\bevent\d+", block).group()
+    raise SystemExit(f"no input device {name}")
+
+
+class Touchscreen:
+    """uinput copy of the main display touch panel (raw 0-4095, like SX8654)."""
+
+    def __init__(self):
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        for ev in (EV_SYN, EV_KEY, EV_ABS):
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, ev)
+        fcntl.ioctl(self.fd, UI_SET_KEYBIT, BTN_TOUCH)
+        for ax in (ABS_X, ABS_Y):
+            fcntl.ioctl(self.fd, UI_SET_ABSBIT, ax)
+        fcntl.ioctl(self.fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT)
+        absmax = [0] * 64
+        absmax[ABS_X] = absmax[ABS_Y] = 4095
+        dev = struct.pack("<80s4HI", b"Brain main panel touchscreen", 6, 0, 0, 1, 0)
+        os.write(self.fd, dev + struct.pack("<64i", *absmax) + bytes(3 * 64 * 4))
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+
+    def send(self, events):
+        os.write(self.fd, b"".join(struct.pack("<IIHHi", 0, 0, t, c, v)
+                                   for t, c, v in events + [(EV_SYN, 0, 0)]))
+
+    def close(self):
+        fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        os.close(self.fd)
+
+
+class MainPanel:
+    """Pass display touches on; turn touches on the printed buttons into actions."""
+
+    def __init__(self, ts, mouse):
+        self.ts = ts
+        self.mouse = mouse
+        self.frame = []
+        self.x = self.y = None
+        self.kind = None       # None (not touched), "screen", "left" or "right"
+        self.pts = []
+
+    def event(self, typ, code, val):
+        if typ != EV_SYN:
+            self.frame.append((typ, code, val))
+            if typ == EV_ABS and code == ABS_X:
+                self.x = val
+            elif typ == EV_ABS and code == ABS_Y:
+                self.y = val
+            return
+        frame, self.frame = self.frame, []
+        touch = [v for t, c, v in frame if t == EV_KEY and c == BTN_TOUCH]
+        if touch and touch[-1] and self.x is not None:
+            self.kind = ("left" if self.x < MAIN_LEFT_X else
+                         "right" if self.x > MAIN_RIGHT_X else "screen")
+            self.pts = []
+            if self.kind != "screen":
+                log(f"main {self.kind} at ({self.x},{self.y})")
+        if self.kind in (None, "screen"):
+            if frame:
+                self.ts.send(frame)
+        elif self.y is not None:
+            self.pts.append((self.x, self.y))
+        if touch and not touch[-1]:
+            if self.kind in ("left", "right"):
+                self.button()
+            self.kind = None
+
+    def button(self):
+        # SX8654 jumps a lot just before release: use the median of the middle
+        core = self.pts[2:-2] if len(self.pts) > 6 else self.pts
+        if not core:
+            return
+        y = sorted(p[1] for p in core)[len(core) // 2]
+        side = MAIN_LEFT if self.kind == "left" else MAIN_RIGHT
+        name = next(n for limit, n in side if y > limit)
+        key = MAIN_KEYS.get(name)
+        log(f"main button {name} (y={y}, n={len(self.pts)})"
+            f"{f' -> key {key}' if key else ', not assigned'}")
+        if key:
+            self.mouse.click(key)
 
 
 def volume(delta):
@@ -398,9 +507,13 @@ def check_long(st, now, mouse):
 
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    touch = os.open(TOUCH, os.O_RDONLY | os.O_NONBLOCK)
+    touch = os.open(find_event(TOUCH), os.O_RDONLY | os.O_NONBLOCK)
     fcntl.ioctl(touch, EVIOCGRAB, 1)
     mouse = Mouse()
+    ts = Touchscreen()
+    main_touch = os.open(find_event(MAIN_TOUCH), os.O_RDONLY | os.O_NONBLOCK)
+    fcntl.ioctl(main_touch, EVIOCGRAB, 1)
+    main_panel = MainPanel(ts, mouse)
     status = Status()
     log("ready")
     x = y = None
@@ -409,9 +522,13 @@ def main():
         while True:
             # wake often only while touched (long press); else at the next poll
             wait = 0.05 if st else min(3600, max(0.05, status.next_poll - time.monotonic()))
-            r, _, _ = select.select([touch], [], [], wait)
+            r, _, _ = select.select([touch, main_touch], [], [], wait)
             now = time.monotonic()
-            if r:
+            if main_touch in r:
+                data = os.read(main_touch, 16 * 64)
+                for i in range(0, len(data) - 15, 16):
+                    main_panel.event(*struct.unpack_from("<HHi", data, i + 8))
+            if touch in r:
                 data = os.read(touch, 16 * 64)
                 for i in range(0, len(data) - 15, 16):
                     sec, usec, typ, code, val = struct.unpack_from("<IIHHi", data, i)
@@ -431,6 +548,7 @@ def main():
             status.update(now)
     finally:
         mouse.close()
+        ts.close()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,40 @@
+From: brainux-pw-a9300
+Subject: [PATCH] ARM: dts: imx28-pwa7200: give the bookmark, home and dictionary menu keys a code
+
+The keyboard MCU sends 0x25 (Bookmark), 0x24 (Home) and 0x2b (Dictionary
+Menu), but the keymap leaves them out, so the driver drops them. Map them
+to F13, F14 and F15 in both the normal and the symbol keymap. These have
+no fixed meaning in X (XF86Tools, XF86Launch5, XF86Launch6), so what they
+do can be chosen in userspace.
+
+Checked on PW-A9300: the three keys arrive as F13, F14 and F15.
+
+diff --git a/arch/arm/boot/dts/imx28-pwa7200.dts b/arch/arm/boot/dts/imx28-pwa7200.dts
+--- a/arch/arm/boot/dts/imx28-pwa7200.dts
++++ b/arch/arm/boot/dts/imx28-pwa7200.dts
+@@ -69,9 +69,9 @@
+ 		<0x15 KEY_PAGEDOWN>,  /* Kogo */
+ 		<0x1c KEY_INSERT>,    /* Britannica */
+ 		<0x1d KEY_DELETE>,    /* Switch */
+-		/* <0x25 >, */        /* Bookmark */
+-		/* <0x24 >, */        /* Home */
+-		/* <0x2b >, */        /* Dictionary Menu */
++		<0x25 KEY_F13>,       /* Bookmark */
++		<0x24 KEY_F14>,       /* Home */
++		<0x2b KEY_F15>,       /* Dictionary Menu */
+ 		<0x02 KEY_Q>,         /* Q */
+ 		<0x08 KEY_W>,         /* W */
+ 		<0x0e KEY_E>,         /* E */
+@@ -119,9 +119,9 @@
+ 		<0x15 KEY_PAGEDOWN>,  /* Kogo */
+ 		<0x1c KEY_INSERT>,    /* Britannica */
+ 		<0x1d KEY_DELETE>,    /* Switch */
+-		/* <0x25 >, */        /* Bookmark */
+-		/* <0x24 >, */        /* Home */
+-		/* <0x2b >, */        /* Dictionary Menu */
++		<0x25 KEY_F13>,       /* Bookmark */
++		<0x24 KEY_F14>,       /* Home */
++		<0x2b KEY_F15>,       /* Dictionary Menu */
+ 		<0x02 KEY_1>,          /* Q */
+ 		<0x08 KEY_2>,          /* W */
+ 		<0x0e KEY_3>,          /* E */
