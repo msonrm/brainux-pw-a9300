@@ -1,0 +1,51 @@
+From: brainux-pw-a9300
+Subject: [PATCH] iio: adc: mxs-lradc-adc: only clear our own interrupt flags
+
+LRADC_CTRL1 holds the interrupt flags of all eight virtual channels and is
+shared with the touchscreen driver, which uses channels 6 and 7. The ADC
+interrupt handler cleared every flag in it. When an ADC read finished
+while a touchscreen conversion was pending, the touchscreen never saw its
+interrupt and stayed "touched" for good: no more touch events until the
+input device was closed by every user.
+
+Only look at and clear the flags of the channels this driver uses:
+channel 0 for single reads, buffer_vchans in buffered mode.
+
+Seen on Brain PW-A9300 with the sub-LCD touch panel and a 10 s ADC poll.
+
+Checked on PW-A9300 together with the mxs-lradc-ts change: 180 s of
+back-to-back ADC reads (6164, no errors) while tapping and dragging on
+the sub-LCD; every touch was released and the touch-detect wait state
+was back afterwards.
+
+diff --git a/drivers/iio/adc/mxs-lradc-adc.c b/drivers/iio/adc/mxs-lradc-adc.c
+index a50f39143..53288c2f9 100644
+--- a/drivers/iio/adc/mxs-lradc-adc.c
++++ b/drivers/iio/adc/mxs-lradc-adc.c
+@@ -388,8 +388,15 @@ static irqreturn_t mxs_lradc_adc_handle_irq(int irq, void *data)
+ 	struct mxs_lradc *lradc = adc->lradc;
+ 	unsigned long reg = readl(adc->base + LRADC_CTRL1);
+ 	unsigned long flags;
++	/*
++	 * LRADC_CTRL1 is shared with the touchscreen: only look at and clear
++	 * the flags of our own virtual channels, or a touchscreen conversion
++	 * can lose its interrupt and the touchscreen stops.
++	 */
++	u32 own = iio_buffer_enabled(iio) ? lradc->buffer_vchans :
++					      LRADC_CTRL1_LRADC_IRQ(0);
+ 
+-	if (!(reg & mxs_lradc_irq_mask(lradc)))
++	if (!(reg & own))
+ 		return IRQ_NONE;
+ 
+ 	if (iio_buffer_enabled(iio)) {
+@@ -402,8 +409,7 @@ static irqreturn_t mxs_lradc_adc_handle_irq(int irq, void *data)
+ 		complete(&adc->completion);
+ 	}
+ 
+-	writel(reg & mxs_lradc_irq_mask(lradc),
+-	       adc->base + LRADC_CTRL1 + STMP_OFFSET_REG_CLR);
++	writel(reg & own, adc->base + LRADC_CTRL1 + STMP_OFFSET_REG_CLR);
+ 
+ 	return IRQ_HANDLED;
+ }

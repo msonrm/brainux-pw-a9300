@@ -1,0 +1,61 @@
+From: brainux-pw-a9300
+Subject: [PATCH] Input: mxs-lradc-ts: only clear the touch-detect flag
+
+The interrupt handler cleared every LRADC_CTRL1 flag except its own
+channel flags, including channel 0 of the ADC driver, so an ADC read could
+time out when it finished during a touch. The touchscreen channel flags
+are already cleared by the state machine; only clear touch-detect here,
+and leave the ADC's flags alone. Return IRQ_NONE when none of the
+touchscreen flags is set.
+
+Pairs with the mxs-lradc-adc change that stops the ADC from clearing the
+touchscreen's flags.
+
+Checked on PW-A9300 together with that change: 180 s of back-to-back
+ADC reads (6164, no errors) while touching the sub-LCD; no ADC timeouts
+and every touch was released.
+
+diff --git a/drivers/input/touchscreen/mxs-lradc-ts.c b/drivers/input/touchscreen/mxs-lradc-ts.c
+index f65331d88..4a1259c87 100644
+--- a/drivers/input/touchscreen/mxs-lradc-ts.c
++++ b/drivers/input/touchscreen/mxs-lradc-ts.c
+@@ -493,28 +493,26 @@ static void mxs_lradc_handle_touch(struct mxs_lradc_ts *ts)
+ static irqreturn_t mxs_lradc_ts_handle_irq(int irq, void *data)
+ {
+ 	struct mxs_lradc_ts *ts = data;
+-	struct mxs_lradc *lradc = ts->lradc;
+ 	unsigned long reg = readl(ts->base + LRADC_CTRL1);
+-	u32 clr_irq = mxs_lradc_irq_mask(lradc);
+ 	const u32 ts_irq_mask =
+ 		LRADC_CTRL1_TOUCH_DETECT_IRQ |
+ 		LRADC_CTRL1_LRADC_IRQ(TOUCHSCREEN_VCHANNEL1) |
+ 		LRADC_CTRL1_LRADC_IRQ(TOUCHSCREEN_VCHANNEL2);
+ 	unsigned long flags;
+ 
+-	if (!(reg & mxs_lradc_irq_mask(lradc)))
++	if (!(reg & ts_irq_mask))
+ 		return IRQ_NONE;
+ 
+-	if (reg & ts_irq_mask) {
+-		spin_lock_irqsave(&ts->lock, flags);
+-		mxs_lradc_handle_touch(ts);
+-		spin_unlock_irqrestore(&ts->lock, flags);
+-		/* Make sure we don't clear the next conversion's interrupt. */
+-		clr_irq &= ~(LRADC_CTRL1_LRADC_IRQ(TOUCHSCREEN_VCHANNEL1) |
+-				LRADC_CTRL1_LRADC_IRQ(TOUCHSCREEN_VCHANNEL2));
+-		writel(reg & clr_irq,
+-		       ts->base + LRADC_CTRL1 + STMP_OFFSET_REG_CLR);
+-	}
++	spin_lock_irqsave(&ts->lock, flags);
++	mxs_lradc_handle_touch(ts);
++	spin_unlock_irqrestore(&ts->lock, flags);
++	/*
++	 * Only clear touch-detect: the channel flags are cleared by the state
++	 * machine (so the next conversion's interrupt is kept), and the other
++	 * flags in LRADC_CTRL1 belong to the ADC driver.
++	 */
++	writel(reg & LRADC_CTRL1_TOUCH_DETECT_IRQ,
++	       ts->base + LRADC_CTRL1 + STMP_OFFSET_REG_CLR);
+ 
+ 	return IRQ_HANDLED;
+ }

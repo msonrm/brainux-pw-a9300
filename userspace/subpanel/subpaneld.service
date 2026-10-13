@@ -1,0 +1,11 @@
+[Unit]
+Description=Sub panel as a touchpad and a status strip
+After=systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/subpaneld
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

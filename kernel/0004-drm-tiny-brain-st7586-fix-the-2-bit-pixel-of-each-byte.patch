@@ -1,0 +1,29 @@
+From: brainux-pw-a9300
+Subject: [PATCH] drm/tiny: brain-st7586: fix the 2-bit pixel of each byte
+
+The ST7586 packs three pixels per byte: two 3-bit pixels and a 2-bit one.
+The 2-bit pixel needs the 3-bit lookup value shifted right by one, as
+st7586.c does, not masked with 0x03. With the mask, every third column
+showed light gray as dark gray and dark gray as white (black and white
+were right, so this only showed up with gray).
+
+Checked on PW-A9300: a light gray area on the sub-LCD no longer has a
+darker line every three pixels.
+
+diff --git a/drivers/gpu/drm/tiny/brain-st7586.c b/drivers/gpu/drm/tiny/brain-st7586.c
+index 471df2dfa..265bcd006 100644
+--- a/drivers/gpu/drm/tiny/brain-st7586.c
++++ b/drivers/gpu/drm/tiny/brain-st7586.c
+@@ -95,10 +95,10 @@ static void st7586_xrgb8888_to_gray332_word(u16 *dst, void *vaddr,
+ 			 * buf: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, a, b, ...
+ 			 * dst: 210543, 876ba9, ...
+ 			 */
+-			packed = (st7586_lookup[*src++ >> 6] & 0x03) << 8;
++			packed = (st7586_lookup[*src++ >> 6] >> 1) << 8;
+ 			packed |= st7586_lookup[*src++ >> 6] << 10;
+ 			packed |= st7586_lookup[*src++ >> 6] << 13;
+-			packed |= (st7586_lookup[*src++ >> 6] & 0x03) << 0;
++			packed |= (st7586_lookup[*src++ >> 6] >> 1) << 0;
+ 			packed |= st7586_lookup[*src++ >> 6] << 2;
+ 			packed |= st7586_lookup[*src++ >> 6] << 5;
+ 

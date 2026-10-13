@@ -1,0 +1,9 @@
+[Unit]
+Description=Let the SoC take up to 480 mA from 5V
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/brain-5v-ilimit
+
+[Install]
+WantedBy=multi-user.target
