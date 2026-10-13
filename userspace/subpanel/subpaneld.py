@@ -4,7 +4,8 @@ take the printed buttons beside the main display off its touch panel (run as roo
 
 Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse instead.
 - Displayed area: relative pointer. Tap = left click, long press = right click.
-- Printed buttons on the right edge: volume up/down (ALSA "Speaker"),
+- Printed buttons on the right edge: volume up/down (ALSA "Speaker", or
+  "Headphone" while something is plugged into the jack, one of 16 steps),
   backlight (cycles the main display brightness, the sub panel follows),
   clear (Esc).
 - Main display (SX8654): also grabbed. A touch that starts on the display is
@@ -12,8 +13,10 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   before. A touch that starts on the printed buttons left and right of the
   display is taken as that button (MAIN_KEYS): the left column sends
   Home / Page Up / Page Down / End, the right column is not assigned yet.
-- A narrow strip at the right edge of the sub panel shows the volume, the
-  brightness and the battery, each next to its printed button.
+- A narrow strip at the right edge of the sub panel shows the volume (with a
+  speaker or headphone icon for the output in use, struck through at 0), the
+  brightness and the battery, each next to its printed button. Plugging or
+  unplugging the headphones redraws it at once.
 Needs uinput.ko (kernel/uinput). Raw coordinates are in docs/subpanel.md.
 The sub panel only shows anything once X stops holding card1 (docs/subpanel.md).
 
@@ -23,13 +26,19 @@ import fcntl, mmap, os, re, select, signal, struct, subprocess, sys, time
 
 TOUCH = "mxs-lradc-ts"                  # input device names
 MAIN_TOUCH = "SX8654 I2C Touchscreen"
+JACK = "mxs_ymu818 Headphone"           # the headphone jack switch (ymu818)
 FB = "/dev/fb1"
 BACKLIGHT = "/sys/class/backlight/backlight@0"        # main display, 0-7
 SUB_BACKLIGHT = "/sys/class/backlight/backlight@1"    # sub panel, 0-3
 BRIGHTNESS_STEPS = [7, 5, 3, 1]
 SUB_BRIGHTNESS = {7: 3, 5: 2, 3: 1, 1: 1}            # sub panel follows the main one
-VOLUME_STEP = 2
-VOLUME_MAX = 27
+# The volume buttons move between 16 steps (and 0), the same for both outputs,
+# so each step is the same 3 px of the bar: round(max * step / 16).
+VOLUME_STEPS = {"Speaker": [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22,
+                            24, 25, 27],
+                "Headphone": [0, 2, 4, 6, 8, 10, 12, 14, 16, 17, 19, 21, 23, 25,
+                              27, 29, 31]}
+STEP_PX = 3
 STATUS_POLL = 30                     # seconds between battery/volume checks
 VERBOSE = "-v" in sys.argv
 
@@ -118,13 +127,15 @@ class Mouse:
         os.close(self.fd)
 
 
-def find_event(name):
+def find_event(name, required=True):
     """/dev/input/eventN of the input device with this name."""
     with open("/proc/bus/input/devices") as f:
         for block in f.read().split("\n\n"):
             if f'N: Name="{name}"' in block:
                 return "/dev/input/" + re.search(r"\bevent\d+", block).group()
-    raise SystemExit(f"no input device {name}")
+    if required:
+        raise SystemExit(f"no input device {name}")
+    return None
 
 
 class Touchscreen:
@@ -205,9 +216,29 @@ class MainPanel:
             self.mouse.click(key)
 
 
-def volume(delta):
-    sign = "+" if delta > 0 else "-"
-    subprocess.run(["amixer", "-q", "sset", "Speaker", f"{abs(delta)}{sign}"])
+def volume_control():
+    """The ALSA control of the output in use: the driver follows the jack."""
+    out = subprocess.run(["amixer", "cget", "iface=CARD,name=Headphone Jack"],
+                         capture_output=True, text=True).stdout
+    return "Headphone" if re.search(r": values=on", out) else "Speaker"
+
+
+def get_volume(name):
+    out = subprocess.run(["amixer", "sget", name], capture_output=True,
+                         text=True).stdout
+    m = re.search(r"Playback (\d+) \[", out)
+    return int(m.group(1)) if m else 0
+
+
+def volume(up):
+    """One step up or down. A value between steps goes to the next one."""
+    name = volume_control()
+    cur, steps = get_volume(name), VOLUME_STEPS[name]
+    if up:
+        new = next((v for v in steps if v > cur), steps[-1])
+    else:
+        new = next((v for v in reversed(steps) if v < cur), 0)
+    subprocess.run(["amixer", "-q", "sset", name, str(new)])
 
 
 def cycle_backlight():
@@ -229,11 +260,20 @@ W, H = 240, 120
 WHITE, LIGHT, DARK, BLACK = b"\xff\xff\xff\x00", b"\xaa\xaa\xaa\x00", \
     b"\x55\x55\x55\x00", b"\x00\x00\x00\x00"
 STRIP_X = 231                        # strip is x 231-239
-VOL_Y = (0, 56)                      # inclusive
+VOL_Y = (0, 47)                      # inclusive
+OUT_Y = 50                           # output icon below the bar, to y 56 like
+                                     # the bar alone, in the volume down button
 BL_Y = (67, 87)
 BATT_Y = (99, 111)                   # the icon, in the clear button
-PLUG_Y = 114                         # plug below it (to the last row) on 5V
-PLUG = [".#.#.", ".#.#.", "#####", "#####", ".###.", "..#.."]
+PLUG_Y = 114                         # plug below it on 5V
+# icons face right, like the printed buttons they sit beside
+SPEAKER = ["...#...", "..##.#.", "####..#", "####..#", "####..#", "..##.#.",
+           "...#..."]
+HEADPHONE = ["..###..", ".#...#.", "#.....#", "#.....#", "##...##", "##...##",
+             "##...##"]
+MUTED = ["#......", ".#.....", "..#....", "...#...", "....#..", ".....#.",
+         "......#"]                  # drawn over the icon, grayed out, at 0
+PLUG = ["...##...", "..######", "#####...", "..######", "...##..."]
 FBIOGET_VSCREENINFO, FBIOPUT_VSCREENINFO = 0x4600, 0x4601
 FB_ACTIVATE_FORCE = 128
 
@@ -284,15 +324,19 @@ class Panel:
         log(f"flush {1000 * (time.monotonic() - t):.0f}ms")
 
 
-def draw_status(panel, vol, level, bars, usb):
+def draw_status(panel, vol, hp, level, bars, usb):
     x0, x1 = STRIP_X + 1, W - 2
     panel.rect(STRIP_X, 0, W - 1, H - 1, WHITE)
     # volume: a bar from the bottom of the volume band, gray behind it
     top, bot = VOL_Y
     panel.shade(x0, top, x1, bot)
-    h = round((bot - top + 1) * vol / VOLUME_MAX)
+    h = STEP_PX * vol
     if h:
         panel.rect(x0, bot - h + 1, x1, bot, BLACK)
+    # the output in use below it
+    panel.pattern(x0, OUT_Y, HEADPHONE if hp else SPEAKER, BLACK if vol else LIGHT)
+    if not vol:
+        panel.pattern(x0, OUT_Y, MUTED, BLACK)
     # brightness: 4 blocks stacked from the bottom of the backlight band
     top, bot = BL_Y
     panel.rect(x0, top, x1, bot, LIGHT)
@@ -313,15 +357,17 @@ def draw_status(panel, vol, level, bars, usb):
             panel.rect(x0 + 1 + r, y0 + r, x0 + 1 + r, y0 + r, BLACK)
             panel.rect(x1 - 1 - r, y0 + r, x1 - 1 - r, y0 + r, BLACK)
     if usb:
-        panel.pattern(x0 + 1, PLUG_Y, PLUG, BLACK)
+        panel.pattern(x0, PLUG_Y, PLUG, BLACK)      # 8 wide, to the right edge
     panel.flush()
 
 
 def read_volume():
-    out = subprocess.run(["amixer", "sget", "Speaker"], capture_output=True,
-                         text=True).stdout
-    m = re.search(r"Playback (\d+) \[", out)
-    return int(m.group(1)) if m else 0
+    """Volume step of the output in use (0-16; a value between steps shows as
+    the step above, so only 0 shows as muted), and whether it is the headphones."""
+    name = volume_control()
+    cur = get_volume(name)
+    step = next(i for i, v in enumerate(VOLUME_STEPS[name] + [cur]) if v >= cur)
+    return min(step, 16), name == "Headphone"
 
 
 def read_level():
@@ -399,9 +445,9 @@ class Status:
         if now >= self.next_poll:
             self.next_poll = now + STATUS_POLL
             self.poll_power()
-        cur = (read_volume(), read_level(), self.bars, self.usb)
+        cur = (*read_volume(), read_level(), self.bars, self.usb)
         if cur != self.shown:
-            log("status vol={} level={} bars={} usb={}".format(*cur))
+            log("status vol={} hp={} level={} bars={} usb={}".format(*cur))
             draw_status(self.panel, *cur)
             self.shown = cur
 
@@ -487,9 +533,9 @@ def on_release(st, now, mouse, status):
         name = button_at(y)
         log(f"button {name} (y={y})")
         if name == "volume_up":
-            volume(VOLUME_STEP)
+            volume(True)
         elif name == "volume_down":
-            volume(-VOLUME_STEP)
+            volume(False)
         elif name == "backlight":
             log(f"brightness {cycle_backlight()}")
         elif name == "clear":
@@ -514,6 +560,9 @@ def main():
     main_touch = os.open(find_event(MAIN_TOUCH), os.O_RDONLY | os.O_NONBLOCK)
     fcntl.ioctl(main_touch, EVIOCGRAB, 1)
     main_panel = MainPanel(ts, mouse)
+    # not grabbed: only to redraw the strip when the headphones go in or out
+    jack_dev = find_event(JACK, required=False)
+    jack = os.open(jack_dev, os.O_RDONLY | os.O_NONBLOCK) if jack_dev else None
     status = Status()
     log("ready")
     x = y = None
@@ -522,8 +571,12 @@ def main():
         while True:
             # wake often only while touched (long press); else at the next poll
             wait = 0.05 if st else min(3600, max(0.05, status.next_poll - time.monotonic()))
-            r, _, _ = select.select([touch, main_touch], [], [], wait)
+            r, _, _ = select.select([touch, main_touch] + ([jack] if jack else []),
+                                    [], [], wait)
             now = time.monotonic()
+            if jack in r:
+                os.read(jack, 16 * 64)
+                status.update(now, force=True)
             if main_touch in r:
                 data = os.read(main_touch, 16 * 64)
                 for i in range(0, len(data) - 15, 16):

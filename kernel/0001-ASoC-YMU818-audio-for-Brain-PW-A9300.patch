@@ -99,10 +99,10 @@ index b1c25189e..c3ca11354 100644
  obj-$(CONFIG_SND_SOC_RPMSG_WM8960_I2C)	+= snd-soc-rpmsg-wm8960-i2c.o
 diff --git a/sound/soc/codecs/ymu818.c b/sound/soc/codecs/ymu818.c
 new file mode 100644
-index 000000000..b2f4a2436
+index 000000000..c3d4fa41a
 --- /dev/null
 +++ b/sound/soc/codecs/ymu818.c
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,665 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Yamaha YMU818 codec driver
@@ -111,6 +111,10 @@ index 000000000..b2f4a2436
 + * this driver: they come from a firmware file that each user extracts from the
 + * WinCE driver of their own device. The firmware is loaded on the first
 + * playback, when the root filesystem is available.
++ *
++ * The output goes to the mono speaker or, when something is plugged into the
++ * headphone jack, to the headphones. The path follows the jack during
++ * playback, as in the WinCE driver.
 + *
 + * Firmware format (little endian):
 + *   "YMU818SQ" u16 version(=1) u16 nsect
@@ -126,10 +130,13 @@ index 000000000..b2f4a2436
 +#include <linux/firmware.h>
 +#include <linux/gpio/consumer.h>
 +#include <linux/i2c.h>
++#include <linux/interrupt.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
 +#include <linux/of.h>
 +#include <linux/slab.h>
++#include <linux/workqueue.h>
++#include <sound/jack.h>
 +#include <sound/pcm.h>
 +#include <sound/pcm_params.h>
 +#include <sound/soc.h>
@@ -166,6 +173,17 @@ index 000000000..b2f4a2436
 +#define YMU818_SPK_VOL_MAX	27
 +#define YMU818_SPK_VOL_DEFAULT	12
 +
++/*
++ * Headphone volume: 0x023 = 0x60 | step, 0x024 = step, step 0..31. The WinCE
++ * driver writes the same step to both (probably left and right).
++ */
++#define YMU818_REG_HP_VOL	0x023
++#define YMU818_HP_VOL_BASE	0x60
++#define YMU818_HP_VOL_MAX	31
++#define YMU818_HP_VOL_DEFAULT	8
++
++#define YMU818_HP_DEBOUNCE_MS	200
++
 +#define YMU818_WAIT_TRIES	200
 +
 +struct ymu818_section {
@@ -178,14 +196,19 @@ index 000000000..b2f4a2436
 +	struct i2c_client *i2c;
 +	struct gpio_desc *reset;
 +	struct gpio_desc *hp_det;
++	struct snd_soc_jack jack;
++	struct delayed_work hp_work;
++	int hp_irq;
++	bool hp_irq_off;	/* the irq disabled itself until hp_work runs */
 +	const char *fw_name;
 +	const struct firmware *fw;
 +	struct ymu818_section sec[YMU818_SEC_MAX];
 +	struct mutex lock;	/* protects the chip state below */
 +	bool inited;
 +	bool running;
-+	bool hp;
++	bool hp;		/* the path in use while running */
 +	unsigned int spk_vol;
++	unsigned int hp_vol;
 +};
 +
 +/*
@@ -403,6 +426,38 @@ index 000000000..b2f4a2436
 +	return ymu818_write(ymu, YMU818_REG_SPK_VOL, &v, 1);
 +}
 +
++static int ymu818_set_hp_vol(struct ymu818_priv *ymu)
++{
++	u8 v[2] = { YMU818_HP_VOL_BASE | ymu->hp_vol, ymu->hp_vol };
++
++	return ymu818_write(ymu, YMU818_REG_HP_VOL, v, 2);
++}
++
++static bool ymu818_hp_plugged(struct ymu818_priv *ymu)
++{
++	return ymu->hp_det && gpiod_get_value_cansleep(ymu->hp_det) > 0;
++}
++
++/* Turn on the path in ymu->hp. The amp_on sequences end at a fixed volume. */
++static int ymu818_path_on(struct ymu818_priv *ymu)
++{
++	int ret;
++
++	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_START_HP : YMU818_SEC_START_SPK);
++	if (ret)
++		return ret;
++	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_ON_HP : YMU818_SEC_AMP_ON_SPK);
++	if (ret)
++		return ret;
++	return ymu->hp ? ymu818_set_hp_vol(ymu) : ymu818_set_spk_vol(ymu);
++}
++
++static void ymu818_path_off(struct ymu818_priv *ymu)
++{
++	ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_OFF_HP : YMU818_SEC_AMP_OFF_SPK);
++	ymu818_run(ymu, ymu->hp ? YMU818_SEC_STOP_HP : YMU818_SEC_STOP_SPK);
++}
++
 +static int ymu818_start(struct ymu818_priv *ymu)
 +{
 +	int ret;
@@ -411,28 +466,62 @@ index 000000000..b2f4a2436
 +	if (ret)
 +		return ret;
 +
-+	/* The WinCE driver picks the output path when playback starts */
-+	ymu->hp = ymu->hp_det && gpiod_get_value_cansleep(ymu->hp_det) > 0;
-+	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_START_HP : YMU818_SEC_START_SPK);
++	ymu->hp = ymu818_hp_plugged(ymu);
++	ret = ymu818_path_on(ymu);
 +	if (ret)
 +		return ret;
-+	ret = ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_ON_HP : YMU818_SEC_AMP_ON_SPK);
-+	if (ret)
-+		return ret;
-+	if (!ymu->hp) {
-+		ret = ymu818_set_spk_vol(ymu);
-+		if (ret)
-+			return ret;
-+	}
 +	ymu->running = true;
 +	return 0;
 +}
 +
 +static void ymu818_stop(struct ymu818_priv *ymu)
 +{
-+	ymu818_run(ymu, ymu->hp ? YMU818_SEC_AMP_OFF_HP : YMU818_SEC_AMP_OFF_SPK);
-+	ymu818_run(ymu, ymu->hp ? YMU818_SEC_STOP_HP : YMU818_SEC_STOP_SPK);
++	ymu818_path_off(ymu);
 +	ymu->running = false;
++}
++
++/* Report the jack and, during playback, move the output to the other path */
++static void ymu818_hp_work(struct work_struct *work)
++{
++	struct ymu818_priv *ymu = container_of(work, struct ymu818_priv,
++					       hp_work.work);
++	bool hp;
++
++	/* The pin has settled: listen again, then read it */
++	if (xchg(&ymu->hp_irq_off, false))
++		enable_irq(ymu->hp_irq);
++	hp = ymu818_hp_plugged(ymu);
++
++	if (ymu->jack.jack)
++		snd_soc_jack_report(&ymu->jack, hp ? SND_JACK_HEADPHONE : 0,
++				    SND_JACK_HEADPHONE);
++
++	mutex_lock(&ymu->lock);
++	if (ymu->running && hp != ymu->hp) {
++		ymu818_path_off(ymu);
++		ymu->hp = hp;
++		if (ymu818_path_on(ymu)) {
++			/* Stay silent; the next playback resets and inits again */
++			ymu->running = false;
++			ymu->inited = false;
++		}
++	}
++	mutex_unlock(&ymu->lock);
++}
++
++/*
++ * The detect contact chatters for a while when a plug goes in (about 1800
++ * edges once). Stay deaf until the debounce work runs.
++ */
++static irqreturn_t ymu818_hp_irq(int irq, void *data)
++{
++	struct ymu818_priv *ymu = data;
++
++	disable_irq_nosync(irq);
++	WRITE_ONCE(ymu->hp_irq_off, true);
++	mod_delayed_work(system_power_efficient_wq, &ymu->hp_work,
++			 msecs_to_jiffies(YMU818_HP_DEBOUNCE_MS));
++	return IRQ_HANDLED;
 +}
 +
 +static int ymu818_prepare(struct snd_pcm_substream *substream,
@@ -492,44 +581,49 @@ index 000000000..b2f4a2436
 +	.ops = &ymu818_dai_ops,
 +};
 +
-+static int ymu818_spk_vol_info(struct snd_kcontrol *kcontrol,
-+			       struct snd_ctl_elem_info *uinfo)
++/* private_value: true for the headphone volume, false for the speaker */
++static int ymu818_vol_info(struct snd_kcontrol *kcontrol,
++			   struct snd_ctl_elem_info *uinfo)
 +{
 +	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 +	uinfo->count = 1;
 +	uinfo->value.integer.min = 0;
-+	uinfo->value.integer.max = YMU818_SPK_VOL_MAX;
++	uinfo->value.integer.max = kcontrol->private_value ?
++				   YMU818_HP_VOL_MAX : YMU818_SPK_VOL_MAX;
 +	return 0;
 +}
 +
-+static int ymu818_spk_vol_get(struct snd_kcontrol *kcontrol,
-+			      struct snd_ctl_elem_value *ucontrol)
++static int ymu818_vol_get(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
 +{
 +	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
 +	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(c);
 +
-+	ucontrol->value.integer.value[0] = ymu->spk_vol;
++	ucontrol->value.integer.value[0] = kcontrol->private_value ?
++					   ymu->hp_vol : ymu->spk_vol;
 +	return 0;
 +}
 +
-+static int ymu818_spk_vol_put(struct snd_kcontrol *kcontrol,
-+			      struct snd_ctl_elem_value *ucontrol)
++static int ymu818_vol_put(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_value *ucontrol)
 +{
 +	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
 +	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(c);
++	bool hp = kcontrol->private_value;
++	unsigned int *vol = hp ? &ymu->hp_vol : &ymu->spk_vol;
 +	long v = ucontrol->value.integer.value[0];
 +	int ret = 0;
 +
-+	if (v < 0 || v > YMU818_SPK_VOL_MAX)
++	if (v < 0 || v > (hp ? YMU818_HP_VOL_MAX : YMU818_SPK_VOL_MAX))
 +		return -EINVAL;
 +	mutex_lock(&ymu->lock);
-+	if (v == ymu->spk_vol) {
++	if (v == *vol) {
 +		mutex_unlock(&ymu->lock);
 +		return 0;
 +	}
-+	ymu->spk_vol = v;
-+	if (ymu->running && !ymu->hp)
-+		ret = ymu818_set_spk_vol(ymu);
++	*vol = v;
++	if (ymu->running && ymu->hp == hp)
++		ret = hp ? ymu818_set_hp_vol(ymu) : ymu818_set_spk_vol(ymu);
 +	mutex_unlock(&ymu->lock);
 +	return ret ? ret : 1;
 +}
@@ -538,13 +632,48 @@ index 000000000..b2f4a2436
 +	{
 +		.iface	= SNDRV_CTL_ELEM_IFACE_MIXER,
 +		.name	= "Speaker Playback Volume",
-+		.info	= ymu818_spk_vol_info,
-+		.get	= ymu818_spk_vol_get,
-+		.put	= ymu818_spk_vol_put,
++		.info	= ymu818_vol_info,
++		.get	= ymu818_vol_get,
++		.put	= ymu818_vol_put,
++		.private_value = false,
++	},
++	{
++		.iface	= SNDRV_CTL_ELEM_IFACE_MIXER,
++		.name	= "Headphone Playback Volume",
++		.info	= ymu818_vol_info,
++		.get	= ymu818_vol_get,
++		.put	= ymu818_vol_put,
++		.private_value = true,
 +	},
 +};
 +
++/* The card exists now: add the jack and report where it is */
++static int ymu818_component_probe(struct snd_soc_component *component)
++{
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(component);
++	int ret;
++
++	if (!ymu->hp_det)
++		return 0;
++	ret = snd_soc_card_jack_new(component->card, "Headphone",
++				    SND_JACK_HEADPHONE, &ymu->jack);
++	if (ret)
++		return ret;
++	mod_delayed_work(system_power_efficient_wq, &ymu->hp_work, 0);
++	return 0;
++}
++
++static void ymu818_component_remove(struct snd_soc_component *component)
++{
++	struct ymu818_priv *ymu = snd_soc_component_get_drvdata(component);
++
++	cancel_delayed_work_sync(&ymu->hp_work);
++	ymu->jack.jack = NULL;
++}
++
 +static const struct snd_soc_component_driver ymu818_component = {
++	.probe			= ymu818_component_probe,
++	.remove			= ymu818_component_remove,
 +	.controls		= ymu818_controls,
 +	.num_controls		= ARRAY_SIZE(ymu818_controls),
 +	.endianness		= 1,
@@ -562,7 +691,9 @@ index 000000000..b2f4a2436
 +		return -ENOMEM;
 +	ymu->i2c = i2c;
 +	ymu->spk_vol = YMU818_SPK_VOL_DEFAULT;
++	ymu->hp_vol = YMU818_HP_VOL_DEFAULT;
 +	mutex_init(&ymu->lock);
++	INIT_DELAYED_WORK(&ymu->hp_work, ymu818_hp_work);
 +	i2c_set_clientdata(i2c, ymu);
 +
 +	/* Keep the chip out of reset; it is pulsed before the init sequence */
@@ -572,6 +703,19 @@ index 000000000..b2f4a2436
 +	ymu->hp_det = devm_gpiod_get_optional(dev, "hp-det", GPIOD_IN);
 +	if (IS_ERR(ymu->hp_det))
 +		return dev_err_probe(dev, PTR_ERR(ymu->hp_det), "hp-det gpio\n");
++
++	if (ymu->hp_det) {
++		int irq = gpiod_to_irq(ymu->hp_det);
++
++		if (irq < 0)
++			return dev_err_probe(dev, irq, "hp-det irq\n");
++		ymu->hp_irq = irq;
++		ret = devm_request_irq(dev, irq, ymu818_hp_irq,
++				       IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
++				       "ymu818-hp-det", ymu);
++		if (ret)
++			return dev_err_probe(dev, ret, "hp-det irq\n");
++	}
 +
 +	ymu->fw_name = YMU818_FW_DEFAULT;
 +	of_property_read_string(dev->of_node, "firmware-name", &ymu->fw_name);
@@ -588,6 +732,13 @@ index 000000000..b2f4a2436
 +{
 +	struct ymu818_priv *ymu = i2c_get_clientdata(i2c);
 +
++	/*
++	 * The irq is devm and goes after this. Keep it disabled across the
++	 * cancel: a running hp_work may enable it once, but not past our disable.
++	 */
++	if (ymu->hp_irq > 0)
++		disable_irq(ymu->hp_irq);
++	cancel_delayed_work_sync(&ymu->hp_work);
 +	release_firmware(ymu->fw);
 +}
 +

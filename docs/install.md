@@ -56,6 +56,7 @@ USB で PC とつないで使う人は、DTB を置いたあとで `sudo brain-c
 uname -r                      # 6.1.70-ga9f534c7f53e-dirty
 aplay -l                      # card 0: mxsymu818
 amixer sset Speaker 12
+amixer sset Headphone 8       # 起動時の alsactl init が 24 にする。イヤホンには大きい
 speaker-test -c 2 -r 44100 -t sine -f 1000 -l 1
 sudo alsactl store
 ```

@@ -13,8 +13,10 @@ Brainux で鳴るのは、もとは圧電ブザー（pwm-beeper）だけでし�
 | 音声データ | SAIF0（ピン 3_20〜3_23）、送信・マスター、`CTRL=0x801`（I2S、16 ビット） | エミュレーション |
 | サンプリング周波数 | 44100 Hz、MCLK 512fs = 22.5792 MHz（PLL0 480MHz を分数分周 3083/65536、CLKCTRL_SAIF0 = 0x00010c0b） | エミュレーション + 実機 |
 | リセット | GPIO3_27 を 1 →(10ms)→ 0 →(20ms)→ 1 | エミュレーション |
-| ヘッドホン検出 | GPIO2_20。挿していないとき 1（スピーカー経路） | 実機 |
-| スピーカー | モノラル | 耳 |
+| ヘッドホン検出 | GPIO2_20。挿していないとき 1（スピーカー経路）。挿すときに接点がばたつく（1 回で約 1800 エッジ） | 実機 |
+| スピーカー | モノラル。左右を同じ重みで足す（左だけ・右だけが同じ大きさ、振幅 0.9 の左右同時でも割れない） | 耳 |
+| ヘッドホン | ステレオ | 耳 |
+| 音量 | スピーカー: reg 0x025 = 0x20 + 0〜27。ヘッドホン: reg 0x023 = 0x60 + 0〜31、0x024 = 0〜31（WinCE は両方に同じ値） | エミュレーション（`emu_volume.py`）+ 実機 |
 
 WinCE のデバイス名 `I2C1:` は「1 個目の I2C」の意味で、ハードウェアの I2C1 ではなく I2C0 でした。
 
@@ -37,19 +39,31 @@ WinCE のデバイス名 `I2C1:` は「1 個目の I2C」の意味で、ハー�
 
 パッチ: [`kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch`](../kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch)（linux-brain a9f534c7 = Brainux 2026-03-25 のカーネルに当てる）
 
-- `sound/soc/codecs/ymu818.c` … コーデックドライバ。レジスタの手順はソースに書かず、ファームウェアファイル `ymu818-brain.bin` から読む。最初の再生のときに読み込み、リセット → 初期化を流す。再生開始（prepare）でヘッドホン検出ピンを見て開始とアンプ ON、停止（shutdown）でアンプ OFF と停止
+- `sound/soc/codecs/ymu818.c` … コーデックドライバ。レジスタの手順はソースに書かず、ファームウェアファイル `ymu818-brain.bin` から読む。最初の再生のときに読み込み、リセット → 初期化を流す。再生開始（prepare）でヘッドホン検出ピンを見て開始とアンプ ON、停止（shutdown）でアンプ OFF と停止。検出ピンの割り込みで、再生中に挿す・抜くと出力先を切り替える（0.2 秒落ち着くのを待つ。待つあいだは割り込みを止める）。ジャックの状態は ALSA の `Headphone Jack` と入力デバイス（SW_HEADPHONE_INSERT）で知らせる
 - `sound/soc/mxs/mxs-ymu818.c` … マシンドライバ（mxs-sgtl5000.c がもと）。再生のみ
 - `imx28-pwa7200.dts` … I2C0 に `yamaha,ymu818`、sgtl5000 を無効、sound ノードを差し替え。PW-A7200 系のほかの機種は未確認
 - `brain_defconfig` … `CONFIG_SND_SOC_MXS_YMU818=y`
 
-ALSA のカード名は `mxs_ymu818`。音量は `Speaker Playback Volume`（0〜27、既定 12）です。
+ALSA のカードは `mxs_ymu818`（`-c mxsymu818`）。
+
+| コントロール | 範囲 | ドライバの既定 | 起動時の `alsactl init` |
+|---|---|---|---|
+| `Speaker Playback Volume` | 0〜27 | 12 | 21 |
+| `Headphone Playback Volume` | 0〜31 | 8 | 24（イヤホンには大きい） |
+| `Headphone Jack`（iface=CARD、読み取りのみ） | on / off | | |
+
+音量はどちらも再生中に変えられ、使っていない側の値は覚えておいて、切り替わったときに書きます。
 
 ```sh
 aplay -l
-amixer sset Speaker 12
-speaker-test -c 2 -r 44100 -t sine -f 1000 -l 1
-sudo alsactl store   # 起動時の alsactl init が 21 にするので、好みの値を保存しておく
+amixer -c mxsymu818 sset Speaker 12
+amixer -c mxsymu818 sset Headphone 8
+amixer -c mxsymu818 cget iface=CARD,name='Headphone Jack'
+speaker-test -D hw:mxsymu818 -c 2 -r 44100 -t sine -f 440 -l 1
+sudo alsactl store   # alsactl init の値は大きいので、好みの値を保存しておく
 ```
+
+確かめたこと（2026-10-13、耳で）: イヤホンは左右が別に鳴り、スピーカーは無音。音量はどちらも段階ごとに大きくなる（イヤホンは 12/31 でもきつくない、スピーカーは 24/27 でも割れない）。再生中に抜くとスピーカー、挿すとイヤホンに、ほぼすぐ切り替わり雑音はない。音量を大きく変えた瞬間にごく小さな雑音が乗る（不快ではない）。
 
 ## ファームウェアを自分の Brain から取り出す
 
@@ -70,11 +84,13 @@ YMU818 の設定手順には、シャープのドライバに入っている係�
 
 3. `ymu818-brain.bin` を Brain の `/usr/lib/firmware/` に置く
 
-`emu_wav.py` と `ymu818_extract.py` には、PW-A9300 の WinCE イメージの中の番地（関数の位置など）が書いてあります。ほかの機種では番地が違うはずなので、そのままでは動きません。
+音量の値とレジスタの対応は `emu_volume.py` で調べました（`--sweep` で細かく刻む）。
+
+`emu_wav.py`・`ymu818_extract.py`・`emu_volume.py` には、PW-A9300 の WinCE イメージの中の番地（関数の位置など）が書いてあります。ほかの機種では番地が違うはずなので、そのままでは動きません。
 
 ## 残っていること
 
-- ヘッドホン経路は試していない（ファームウェアには手順が入っている）
+- 音量を変えた瞬間のごく小さな雑音（ゼロクロスでの切り替えなどがあるかは未調査）
 - 録音（SAIF1）は未対応
 - ほかの機種（PW-A7200 系の兄弟機）は未確認
 - WinCE の音声ドライバには電池が弱ったときのイベント（AUDIO_LOW_BATTERY_EVENT）があり、何か対処しているらしい
