@@ -19,7 +19,9 @@
   ```
 
   一度有効になれば、あとは `/dev/fb1` に書くだけで更新される（video グループなら sudo 不要）
-- 今の形: `system/etc/X11/xorg.conf.d/20-subpanel.conf` で `AutoAddGPU` を切り、subpaneld が起動時に fbdev でモード設定する。ただし X は起動時の機器の調べで card1 をやはり開く（Xorg.0.log に `got fd for /dev/dri/card1`）。サブ液晶が映るのは subpaneld が X より先にモード設定するからで、**起動の順番に頼っている**（未解決。2026-10-13 の起動では subpaneld が 58 秒、X が card1 を開いたのが 125 秒で、余裕はある）。直す案: udev で card1 に別の `ID_SEAT` を付け、seat0 の X に拾わせない（未試験）
+- 今の形: `system/etc/udev/rules.d/72-brain-subpanel-seat.rules` で card1 を別の席（`ID_SEAT=seat-subpanel`、`master-of-seat` の印も外す）にする。Xorg は自分の席（seat0）の DRM 機器しか開かないので、起動の順番に関係なく card1 に触らない。subpaneld は fbdev（`/dev/fb1`）でモード設定して描く
+  - 2026-10-13 に再起動して確認: Xorg.0.log に card1 が一度も出ず（開いたのは card0 だけ）、card1 の DRM のクライアントはなし、サブ液晶は `active=1`
+  - それまでは `20-subpanel.conf` の `AutoAddGPU false` だけで、X は起動時の調べで card1 をやはり開いていた（`got fd for /dev/dri/card1`）。サブ液晶が映ったのは subpaneld（起動から 58 秒）が X（125 秒）より先にモード設定していたから。`AutoAddGPU false` は念のため残してある
 - 階調: `brain-st7586` は XRGB8888 を gray8 にして上位 2 ビットで 4 階調にする。白 ff・薄いグレー aa・濃いグレー 55・黒 00。3 画素目のグレーが化けて 3 画素ごとに縦線が出る不具合があり、`kernel/0004` で直した（上流の st7586.c と同じ計算にした）
 - 向き: `fb1` の左上がサブ液晶の左上（DTS の `rotation = <180>` で合っている）
 - `userspace/subpanel/mkpalette.py` が記号表（8 列 × 3 段、1 マス 30×40 px）を作る。Chromebook 側で Pillow を使って作り、raw を送る（Brain には Pillow がない）
@@ -124,6 +126,7 @@ Brain では `/usr/local/bin/subpaneld`、`subpaneld.service`（`-v` で詳し�
 ### 要るもの
 
 - uinput: Brainux のカーネルは `CONFIG_INPUT_UINPUT` が無効。`kernel/uinput/build.sh` でツリーの uinput.c を外付けモジュールにし、`/usr/lib/modules/$(uname -r)/extra/` に置いて depmod。`system/etc/modules-load.d/uinput.conf` で起動時に読む
+- `system/etc/udev/rules.d/72-brain-subpanel-seat.rules`: card1 を X の席から外す
 - `system/etc/X11/xorg.conf.d/20-subpanel.conf`: X に card1 を GPU として足させない・サブ液晶のタッチを無視させる
 - カーネルの修正 `kernel/0005`・`0006`（下の「タッチが固まる」）
 

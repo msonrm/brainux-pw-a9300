@@ -1,0 +1,6 @@
+# The sub-LCD (brain-st7586, card1) belongs to subpaneld, not to the X session.
+# Put it on a seat of its own and keep logind from making it a seat master:
+# Xorg on seat0 then skips it when it probes the drm devices, so it never
+# opens card1 or takes its DRM master (subpaneld drives it through /dev/fb1).
+# After 71-seat.rules, which tags drm cards master-of-seat.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", DRIVERS=="brain-st7586", ENV{ID_SEAT}="seat-subpanel", TAG-="master-of-seat"
