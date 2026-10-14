@@ -17,7 +17,7 @@ Brain で:
 sudo sh system/setup-stability.sh
 ```
 
-unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap が入ります。
+unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入ります。
 
 ## 2. カーネル（音声ドライバ・バックライト・蓋）
 
