@@ -1,0 +1,8 @@
+#!/bin/sh
+# systemd-sleep runs this with pre|post and the kind of sleep. After waking,
+# watch the Wi-Fi stick in a unit of its own, so that this returns at once
+# (systemd-sleep waits for its hooks before thawing the session).
+[ "$1" = post ] &&
+	systemd-run --no-block --collect --unit=brain-wifi-reprobe \
+		/usr/local/bin/brain-wifi-reprobe >/dev/null 2>&1
+exit 0

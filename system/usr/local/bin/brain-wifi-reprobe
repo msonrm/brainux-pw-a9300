@@ -1,0 +1,38 @@
+#!/bin/sh
+# After waking: if a Wi-Fi stick that rtl8xxxu66 handles is on the bus with no
+# driver (the probe that resume redoes failed, -11 while writing the firmware),
+# probe it again by deauthorizing and authorizing the USB device, the same as
+# replugging it. Started by /usr/lib/systemd/system-sleep/brain-wifi-reprobe;
+# watches for 30 s, at most 2 tries. Messages go to the journal.
+DRV=rtl8xxxu66
+
+unbound() {
+	for i in /sys/bus/usb/devices/*:1.0; do
+		[ -e "$i/driver" ] && continue
+		[ -r "$i/modalias" ] || continue
+		/usr/sbin/modprobe -q --resolve-alias "$(cat "$i/modalias")" 2>/dev/null |
+			grep -qx "$DRV" || continue
+		echo "${i%:1.0}"
+	done
+}
+
+seen=0 tries=0
+for t in $(seq 30); do
+	sleep 1
+	devs=$(unbound)
+	if [ -z "$devs" ]; then
+		seen=0
+		continue
+	fi
+	seen=$((seen + 1))
+	[ $seen -lt 3 ] && continue   # give a probe in progress time to finish
+	[ $tries -ge 2 ] && { echo "still no driver after $tries tries: $devs"; exit 1; }
+	tries=$((tries + 1)) seen=0
+	for d in $devs; do
+		echo "no driver on ${d##*/} ${t}s after waking, probing it again (try $tries)"
+		echo 0 > "$d/authorized"
+		sleep 1
+		echo 1 > "$d/authorized"
+	done
+done
+exit 0

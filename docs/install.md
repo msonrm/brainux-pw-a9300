@@ -74,6 +74,15 @@ sudo systemctl kill -s HUP systemd-logind
 
 1 つ目は眠り方を s2idle にします（`deep` だと 1 秒ほどで起きてしまう）。次のサスペンドから効きます（`/sys/power/mem_sleep` は起動直後 `s2idle [deep]` で、systemd が眠るときに `[s2idle]` へ切り替えます）。2 つ目で「入/切」は、短く押すと眠る・長押しで電源オフになります（Brainux の既定は押すと電源オフ）。蓋を閉じるか「入/切」を押すと眠り、蓋を開けるかキーを押すと起きます。
 
+起きたあと Wi-Fi が戻らないことへの手当て（手順 4 の rtl8xxxu66 を入れたとき）:
+
+```sh
+sudo install -D -m 755 system/usr/local/bin/brain-wifi-reprobe /usr/local/bin/brain-wifi-reprobe
+sudo install -D -m 755 system/usr/lib/systemd/system-sleep/brain-wifi-reprobe /usr/lib/systemd/system-sleep/brain-wifi-reprobe
+```
+
+rtl8xxxu66 には眠る・起きるの処理がなく、起きるたびに子機の初期化をやり直します。それがときどきファームウェアの書き込みで失敗し（`probe of 1-1.3:1.0 failed with error -11`）、Wi-Fi が来なくなります。起きてから 30 秒の間に、ドライバのついていない子機を見つけたら、USB の `authorized` を 0→1 にして初期化をやり直させます（子機を挿し直すのと同じ）。やったことは `journalctl -u brain-wifi-reprobe` に出ます。
+
 ## 3. 音楽ファイルを鳴らす
 
 ```sh

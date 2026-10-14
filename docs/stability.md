@@ -70,7 +70,7 @@ w /sys/module/zswap/parameters/enabled - - - - Y
 固まると、journald のログは書き出される前に消えます（既定の書き出し間隔は 5 分）。調べるあいだは次の二つを入れておくと、直前の様子がわかります。
 
 - `system/etc/systemd/journald.conf.d/sync.conf` … journald を 10 秒ごとに書き出す
-- `userspace/brain-watch.sh` + `brain-watch.service` … 10 秒ごとに空きメモリ・スワップ・負荷・Wi-Fi の電波・メモリを多く使うプロセス上位 3 つを `/var/log/brain-watch.log` に 1 行書き、そのつど fsync する
+- `userspace/brain-watch.sh` + `brain-watch.service` … 10 秒ごとに空きメモリ・スワップ・負荷・Wi-Fi の電波・メモリを多く使うプロセス上位 3 つを `/var/log/brain-watch.log` に 1 行書き、そのつど fsync する（今は電源の様子 `pwr=[...]` も。眠っている間は書かないので、眠りの前後の値から眠っている間の様子は読めない）
 
 Wi-Fi が固まった件は、これで「メモリ不足ではない」と切り分けられました。
 
