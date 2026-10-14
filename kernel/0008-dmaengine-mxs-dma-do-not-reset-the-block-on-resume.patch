@@ -1,0 +1,73 @@
+From: brainux-pw-a9300
+Subject: [PATCH] dmaengine: mxs-dma: do not reset the block on resume
+
+The system resume callback ran mxs_dma_init() again, which resets the
+whole APBH/APBX block with stmp_reset_block(). Client drivers keep their
+channels allocated across suspend (i2c-mxs requests its channel at probe,
+the SAIF PCM at registration), so the reset pulls the channel state out
+from under them. After resume the first DMA transfer on the I2C0 channel
+still finished, and every later one stalled: i2c-mxs timed out with
+-ETIMEDOUT after 1 s. Resetting the channel alone did not bring it back.
+
+The block keeps its power and register state in suspend, as the
+upstream driver (which has no system sleep callbacks) relies on. Use
+pm_runtime_force_suspend()/pm_runtime_force_resume(), which only stop
+and restart the clock and keep the runtime PM state balanced.
+
+Seen on Brain PW-A9300 with s2idle: after resume, i2c-mxs PIO transfers
+(up to 4 bytes read, 6 bytes write) still worked, so the keyboard and
+touch panel on I2C0 were fine, but the YMU818 codec init failed at its
+first long write and audio playback failed with -ETIMEDOUT. I2C reads of
+8 and 16 bytes (DMA) timed out every time.
+
+Checked on PW-A9300: s2idle, wake by key, then 8- and 16-byte I2C reads
+(DMA) worked and the YMU818 init and a 3 s playback succeeded.
+
+diff --git a/drivers/dma/mxs-dma.c b/drivers/dma/mxs-dma.c
+index 1b0c3ef5e..a19eaa2a8 100644
+--- a/drivers/dma/mxs-dma.c
++++ b/drivers/dma/mxs-dma.c
+@@ -902,29 +902,6 @@ static int mxs_dma_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
+-#ifdef CONFIG_PM_SLEEP
+-static int mxs_dma_pm_suspend(struct device *dev)
+-{
+-	int ret;
+-
+-	ret = pm_runtime_force_suspend(dev);
+-
+-	return ret;
+-}
+-
+-static int mxs_dma_pm_resume(struct device *dev)
+-{
+-	struct mxs_dma_engine *mxs_dma = dev_get_drvdata(dev);
+-	int ret;
+-
+-	ret = mxs_dma_init(mxs_dma);
+-	if (ret)
+-		return ret;
+-
+-	return 0;
+-}
+-#endif
+-
+ int mxs_dma_runtime_suspend(struct device *dev)
+ {
+ 	struct mxs_dma_engine *mxs_dma = dev_get_drvdata(dev);
+@@ -950,7 +927,12 @@ int mxs_dma_runtime_resume(struct device *dev)
+ 
+ static const struct dev_pm_ops mxs_dma_pm_ops = {
+ 	SET_RUNTIME_PM_OPS(mxs_dma_runtime_suspend, mxs_dma_runtime_resume, NULL)
+-	SET_SYSTEM_SLEEP_PM_OPS(mxs_dma_pm_suspend, mxs_dma_pm_resume)
++	/*
++	 * The block keeps its power and state in suspend. Do not reset it on
++	 * resume: the I2C and SAIF drivers keep their channels allocated, and
++	 * a block reset under them leaves the channels unusable.
++	 */
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+ };
+ 
+ static struct platform_driver mxs_dma_driver = {
