@@ -77,4 +77,4 @@ cat /var/log/wifi-swap.log
 
 - rtl8xxxu66 の送信処理（`rtl8xxxu_fill_txdesc_v3`）は、カーネル内で unaligned access を起こしている（`/proc/cpu/alignment` の System が増える）。カーネルが補正しているので動作は正しいが、少し無駄がある
 - 接続時に `Limiting TX power to 0 (-128 - 0) dBm as advertised by ...` と出る。通信はできている
-- rtl8xxxu66 には眠る・起きるの処理（suspend・resume）がない。起きるたびに USB の層がドライバを外して子機をリセットし、初期化をやり直す。それがときどきファームウェアの書き込みで失敗し（`rtl8xxxu_writeN: Failed to write block at addr: 1d00` → `probe ... failed with error -11`）、Wi-Fi が来なくなる。ハブの抜き差しでも同じ失敗が出る。子機を挿し直せば戻る。起きたときの分は `brain-wifi-reprobe`（[install.md](install.md) の手順 2 のサスペンド）が自動でやり直す（2026-10-15、[power.md](power.md)）
+- rtl8xxxu66 には眠る・起きるの処理（suspend・resume）がない。起きるたびに USB の層がドライバを外して子機をリセットし、初期化をやり直す。それがときどきファームウェアの書き込みで失敗し（`rtl8xxxu_writeN: Failed to write block at addr: 1d00` → `probe ... failed with error -11`）、Wi-Fi が来なくなる。ハブの抜き差しでも同じ失敗が出る。子機を挿し直せば戻る。起きたときの分は `brain-wifi-reprobe`（[install.md](install.md) の手順 2 のサスペンド）が、子機のハブのポートの電源を 2 秒切って自動でやり直す（`authorized` の付け直しでは、ドライバはつくがビーコンを受けず戻らなかった。2026-10-15、[power.md](power.md)）

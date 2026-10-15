@@ -31,11 +31,12 @@ git apply ../brainux-pw-a9300/kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.p
 git apply ../brainux-pw-a9300/kernel/0002-pwm-mxs-drive-inactive-level-before-stop.patch
 git apply ../brainux-pw-a9300/kernel/0003-brain-kbd-i2c-lid-switch-and-wakeup.patch
 git apply ../brainux-pw-a9300/kernel/0008-dmaengine-mxs-dma-do-not-reset-the-block-on-resume.patch
+git apply ../brainux-pw-a9300/kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build brain_defconfig
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build -j8 zImage dtbs modules
 ```
 
-0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）、0008 は眠って起きたあとも音が出るようにするためのものです（[power.md](power.md)）。音だけでよければ 0001 だけでも動きます。
+0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）、0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すためのものです（どちらも [power.md](power.md)。眠り方の既定は s2idle なので、0009 は `deep` を選んだときだけ働きます）。音だけでよければ 0001 だけでも動きます。
 
 `git apply` で当てると、カーネルの版は `6.1.70-ga9f534c7f53e-dirty` になります。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。
 
@@ -67,12 +68,12 @@ sudo alsactl store
 サスペンド（0002・0003 を当てたとき）:
 
 ```sh
-sudo install -D -m 644 system/etc/systemd/sleep.conf.d/brain-s2idle.conf /etc/systemd/sleep.conf.d/brain-s2idle.conf
+sudo install -D -m 644 system/etc/systemd/sleep.conf.d/brain-sleep-mode.conf /etc/systemd/sleep.conf.d/brain-sleep-mode.conf
 sudo install -D -m 644 system/etc/systemd/logind.conf.d/brain-power-key.conf /etc/systemd/logind.conf.d/brain-power-key.conf
 sudo systemctl kill -s HUP systemd-logind
 ```
 
-1 つ目は眠り方を s2idle にします（`deep` だと 1 秒ほどで起きてしまう）。次のサスペンドから効きます（`/sys/power/mem_sleep` は起動直後 `s2idle [deep]` で、systemd が眠るときに `[s2idle]` へ切り替えます）。2 つ目で「入/切」は、短く押すと眠る・長押しで電源オフになります（Brainux の既定は押すと電源オフ）。蓋を閉じるか「入/切」を押すと眠り、蓋を開けるかキーを押すと起きます。
+1 つ目は眠り方を `deep` にします（0009 で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足します）。0009 を当てていないカーネルでは、`deep` は s2idle とほぼ同じ眠り方で、しかも眠っていた時間が時計から抜けるので（RTC が無効なため）、ファイルの `MemorySleepMode=` を `s2idle` に書き換えてください。次のサスペンドから効きます。2 つ目で「入/切」は、短く押すと眠る・長押しで電源オフになります（Brainux の既定は押すと電源オフ）。蓋を閉じるか「入/切」を押すと眠り、蓋を開けるかキーを押すと起きます。
 
 起きたあと Wi-Fi が戻らないことへの手当て（手順 4 の rtl8xxxu66 を入れたとき）:
 
@@ -81,7 +82,7 @@ sudo install -D -m 755 system/usr/local/bin/brain-wifi-reprobe /usr/local/bin/br
 sudo install -D -m 755 system/usr/lib/systemd/system-sleep/brain-wifi-reprobe /usr/lib/systemd/system-sleep/brain-wifi-reprobe
 ```
 
-rtl8xxxu66 には眠る・起きるの処理がなく、起きるたびに子機の初期化をやり直します。それがときどきファームウェアの書き込みで失敗し（`probe of 1-1.3:1.0 failed with error -11`）、Wi-Fi が来なくなります。起きてから 30 秒の間に、ドライバのついていない子機を見つけたら、USB の `authorized` を 0→1 にして初期化をやり直させます（子機を挿し直すのと同じ）。やったことは `journalctl -u brain-wifi-reprobe` に出ます。
+rtl8xxxu66 には眠る・起きるの処理がなく、起きるたびに子機の初期化をやり直します。それがときどきファームウェアの書き込みで失敗し（`probe of 1-1.3:1.0 failed with error -11`）、Wi-Fi が来なくなります。起きてから 60 秒の間に、ドライバのついていない子機を見つけたら、子機がつながっているハブのポートの電源を 2 秒切って戻します（子機を挿し直すのと同じ）。ハブはポートの電源をまとめて切るので、同じハブにつないだほかの機器も一緒に切れます。やったことは `journalctl -u brain-wifi-reprobe` に出ます。
 
 ## 3. 音楽ファイルを鳴らす
 

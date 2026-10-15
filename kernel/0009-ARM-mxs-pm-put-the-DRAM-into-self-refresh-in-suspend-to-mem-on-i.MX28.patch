@@ -1,0 +1,275 @@
+From: brainux-pw-a9300
+Subject: [PATCH] ARM: mxs: pm: put the DRAM into self-refresh in suspend-to-mem on i.MX28
+
+Suspend-to-mem on mxs only ran cpu_do_idle(), a single WFI with the DRAM,
+the PLL and the CPU clock left running, so "deep" saved no more than
+s2idle. On i.MX28, copy a short routine to the on-chip RAM and run it
+from there, as the Freescale 2.6.35 BSP did (mx28_cpu_standby):
+
+ - move the CPU onto the 24 MHz crystal,
+ - put the DRAM into self-refresh (HW_DRAM_CTL22 LOWPOWER_CONTROL = 2),
+ - gate the EMI clock and the CPU and EMI fractional dividers,
+ - at level 2 (the default), also power PLL0 down and divide HBUS by 31,
+ - wait for an interrupt, then undo it all in reverse order.
+
+The routine runs with the MMU on and reaches the registers through their
+ioremap() addresses; it reads each register page first so the TLB holds
+them, and touches no DRAM (no stack, no literal pool) between entering
+and leaving the self-refresh. Unlike the BSP it does not lower VDDD,
+VDDA or VDDIO and does not touch the DC-DC settings.
+
+The timer stops during suspend-to-mem, and boards without an RTC driver
+(the Sharp Brain DTs disable rtc@80056000) lost the time slept: the clock
+fell behind by exactly as long as the system had been asleep. Read the
+RTC's seconds counter before and after and inject the difference with
+timekeeping_inject_sleeptime64() from the .wake callback. The RTC is only
+read.
+
+mxs_pm.level (0644) chooses the depth: 0 = WFI only as before, 1 = self-
+refresh and clock gating, 2 = also PLL0 off and slow HBUS.
+
+Tested on a Sharp Brain PW-A9300 (i.MX283) with a powered USB hub and
+a Wi-Fi stick attached: at each level it slept until a key was pressed
+(67-90 s), the time slept as counted by the RTC and by the clock agreed,
+and the keyboard, both touch panels, the sound and the Wi-Fi worked
+after waking.
+
+diff --git a/arch/arm/mach-mxs/Makefile b/arch/arm/mach-mxs/Makefile
+index 2bcd5e11b..334dfc7c9 100644
+--- a/arch/arm/mach-mxs/Makefile
++++ b/arch/arm/mach-mxs/Makefile
+@@ -1,3 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-$(CONFIG_PM) += pm.o
++obj-$(CONFIG_PM) += pm.o suspend-mx28.o
+ obj-$(CONFIG_ARCH_MXS) += mach-mxs.o
+diff --git a/arch/arm/mach-mxs/pm.c b/arch/arm/mach-mxs/pm.c
+index 610eabbc7..eb3339952 100644
+--- a/arch/arm/mach-mxs/pm.c
++++ b/arch/arm/mach-mxs/pm.c
+@@ -6,13 +6,59 @@
+ #include <linux/kernel.h>
+ #include <linux/suspend.h>
+ #include <linux/io.h>
++#include <linux/of.h>
++#include <linux/moduleparam.h>
++#include <linux/timekeeping.h>
++#include <asm/cacheflush.h>
++#include <asm/fncpy.h>
+ #include "pm.h"
+ 
++/*
++ * i.MX28 suspend-to-mem: run a short routine from the on-chip RAM that puts
++ * the DRAM into self-refresh, moves the CPU to the 24 MHz crystal, gates the
++ * EMI clock and waits for an interrupt (after mx28_cpu_standby in the
++ * Freescale 2.6.35 BSP).
++ *
++ * level: 0 = WFI only (as before), 1 = DRAM self-refresh, CPU on the
++ * crystal, EMI clock gated, 2 = also power PLL0 down and slow HBUS down.
++ */
++#define MX28_OCRAM_PHYS		0x00008000	/* free once the boot ROM is done */
++#define MX28_OCRAM_SIZE		SZ_4K
++#define MX28_CLKCTRL_PHYS	0x80040000
++#define MX28_DRAM_PHYS		0x800e0000
++#define MX28_RTC_PHYS		0x80056000
++#define HW_RTC_SECONDS		0x30
++
++extern void mx28_suspend_in_ocram(void __iomem *clkctrl, void __iomem *dram,
++				  int level);
++extern const u32 mx28_suspend_in_ocram_sz;
++
++#undef MODULE_PARAM_PREFIX
++#define MODULE_PARAM_PREFIX "mxs_pm."
++
++static int level = 2;
++module_param(level, int, 0644);
++MODULE_PARM_DESC(level, "0: WFI only, 1: DRAM self-refresh, 2: also PLL0 off");
++
++static void (*suspend_in_ocram)(void __iomem *, void __iomem *, int);
++static void __iomem *clkctrl, *dram, *rtc;
++static u32 slept_from;
++static bool slept;
++
+ static int mxs_suspend_enter(suspend_state_t state)
+ {
+ 	switch (state) {
+ 	case PM_SUSPEND_MEM:
+-		cpu_do_idle();
++		if (rtc)
++			slept_from = readl(rtc + HW_RTC_SECONDS);
++		if (suspend_in_ocram && level > 0) {
++			/* nothing in the DRAM may be written back meanwhile */
++			flush_cache_all();
++			suspend_in_ocram(clkctrl, dram, level);
++		} else {
++			cpu_do_idle();
++		}
++		slept = rtc != NULL;
+ 		break;
+ 
+ 	default:
+@@ -21,12 +67,48 @@ static int mxs_suspend_enter(suspend_state_t state)
+ 	return 0;
+ }
+ 
++/*
++ * The timer stops while suspended and these boards run no RTC driver, so add
++ * the time slept as counted by the RTC's seconds counter (only read here).
++ */
++static void mxs_suspend_wake(void)
++{
++	struct timespec64 delta = { };
++
++	if (!slept)
++		return;
++	slept = false;
++	delta.tv_sec = (u32)(readl(rtc + HW_RTC_SECONDS) - slept_from);
++	if (delta.tv_sec > 0 && !timekeeping_rtc_skipresume())
++		timekeeping_inject_sleeptime64(&delta);
++}
++
+ static const struct platform_suspend_ops mxs_suspend_ops = {
+ 	.enter = mxs_suspend_enter,
++	.wake = mxs_suspend_wake,
+ 	.valid = suspend_valid_only_mem,
+ };
+ 
++static void __init mx28_pm_init(void)
++{
++	void __iomem *ocram;
++
++	clkctrl = ioremap(MX28_CLKCTRL_PHYS, SZ_8K);
++	dram = ioremap(MX28_DRAM_PHYS, SZ_8K);
++	rtc = ioremap(MX28_RTC_PHYS, SZ_8K);
++	ocram = __arm_ioremap_exec(MX28_OCRAM_PHYS, MX28_OCRAM_SIZE, false);
++	if (!clkctrl || !dram || !ocram ||
++	    WARN_ON(mx28_suspend_in_ocram_sz > MX28_OCRAM_SIZE)) {
++		pr_err("mxs: suspend without DRAM self-refresh\n");
++		return;
++	}
++	suspend_in_ocram = fncpy(ocram, &mx28_suspend_in_ocram,
++				 mx28_suspend_in_ocram_sz);
++}
++
+ void __init mxs_pm_init(void)
+ {
++	if (of_machine_is_compatible("fsl,imx28"))
++		mx28_pm_init();
+ 	suspend_set_ops(&mxs_suspend_ops);
+ }
+diff --git a/arch/arm/mach-mxs/suspend-mx28.S b/arch/arm/mach-mxs/suspend-mx28.S
+new file mode 100644
+index 000000000..dd4638473
+--- /dev/null
++++ b/arch/arm/mach-mxs/suspend-mx28.S
+@@ -0,0 +1,110 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * i.MX28 suspend-to-mem, copied to and run from the on-chip RAM, with the
++ * MMU on (the registers are reached through their ioremap() addresses).
++ * After mx28_cpu_standby in the Freescale 2.6.35 BSP (arch/arm/mach-mx28/
++ * sleep.S, Copyright (C) 2010 Freescale Semiconductor, Inc.).
++ *
++ * Nothing here may touch the DRAM between entering and leaving the
++ * self-refresh: no stack, no literal pool, only registers.
++ *
++ * void mx28_suspend_in_ocram(void __iomem *clkctrl, void __iomem *dram,
++ *			      int level);
++ */
++#include <linux/linkage.h>
++#include <asm/assembler.h>
++
++#define SET				0x4
++#define CLR				0x8
++
++#define HW_CLKCTRL_PLL0CTRL0		0x000
++#define HW_CLKCTRL_HBUS			0x060
++#define HW_CLKCTRL_EMI			0x0f0	/* no SET/CLR */
++#define HW_CLKCTRL_FRAC0		0x1b0
++#define HW_CLKCTRL_CLKSEQ		0x1d0
++#define BM_CLKCTRL_PLL0CTRL0_POWER	(1 << 17)
++#define BM_CLKCTRL_HBUS_DIV		0x1f
++#define BM_CLKCTRL_EMI_CLKGATE		(1 << 31)
++#define BM_CLKCTRL_FRAC0_CLKGATEEMI	(1 << 15)
++#define BM_CLKCTRL_FRAC0_CLKGATECPU	(1 << 7)
++#define BM_CLKCTRL_CLKSEQ_BYPASS_CPU	(1 << 18)
++
++#define HW_DRAM_CTL22			0x058
++#define BM_DRAM_CTL22_LOWPOWER_CONTROL	(0x1f << 8)
++#define BF_DRAM_CTL22_SELF_REFRESH	(0x02 << 8)
++
++	.text
++	.align	3
++ENTRY(mx28_suspend_in_ocram)
++	stmfd	sp!, {r4 - r6, lr}
++
++	/* load the TLB entries needed while the DRAM sleeps */
++	ldr	r3, [r0]
++	ldr	r3, [r1]
++
++	/* CPU onto the 24 MHz crystal */
++	mov	r3, #BM_CLKCTRL_CLKSEQ_BYPASS_CPU
++	str	r3, [r0, #HW_CLKCTRL_CLKSEQ + SET]
++
++	/* DRAM into self-refresh, and give it time to get there */
++	ldr	r4, [r1, #HW_DRAM_CTL22]
++	bic	r3, r4, #BM_DRAM_CTL22_LOWPOWER_CONTROL
++	orr	r3, r3, #BF_DRAM_CTL22_SELF_REFRESH
++	str	r3, [r1, #HW_DRAM_CTL22]
++	mov	r3, #0
++	mcr	p15, 0, r3, c7, c10, 4		@ drain the write buffer
++	mov	r3, #(24 << 12)
++1:	subs	r3, r3, #1
++	bne	1b
++
++	/* gate the EMI clock and the CPU and EMI fractional dividers */
++	ldr	r5, [r0, #HW_CLKCTRL_EMI]
++	orr	r3, r5, #BM_CLKCTRL_EMI_CLKGATE
++	str	r3, [r0, #HW_CLKCTRL_EMI]
++	mov	r3, #BM_CLKCTRL_FRAC0_CLKGATEEMI
++	orr	r3, r3, #BM_CLKCTRL_FRAC0_CLKGATECPU
++	str	r3, [r0, #HW_CLKCTRL_FRAC0 + SET]
++
++	cmp	r2, #2
++	blt	2f
++	/* PLL0 off, HBUS down to 24 MHz / 31 */
++	mov	r3, #BM_CLKCTRL_PLL0CTRL0_POWER
++	str	r3, [r0, #HW_CLKCTRL_PLL0CTRL0 + CLR]
++	ldr	r6, [r0, #HW_CLKCTRL_HBUS]
++	mov	r3, #BM_CLKCTRL_HBUS_DIV
++	str	r3, [r0, #HW_CLKCTRL_HBUS + SET]
++2:
++	mov	r3, #0
++	mcr	p15, 0, r3, c7, c10, 4		@ drain the write buffer
++	mcr	p15, 0, r3, c7, c0, 4		@ wait for interrupt
++
++	cmp	r2, #2
++	blt	3f
++	str	r6, [r0, #HW_CLKCTRL_HBUS]
++	mov	r3, #BM_CLKCTRL_PLL0CTRL0_POWER
++	str	r3, [r0, #HW_CLKCTRL_PLL0CTRL0 + SET]
++	mov	r3, #(24 << 6)			@ let PLL0 lock
++4:	subs	r3, r3, #1
++	bne	4b
++3:
++	mov	r3, #BM_CLKCTRL_FRAC0_CLKGATEEMI
++	orr	r3, r3, #BM_CLKCTRL_FRAC0_CLKGATECPU
++	str	r3, [r0, #HW_CLKCTRL_FRAC0 + CLR]
++	str	r5, [r0, #HW_CLKCTRL_EMI]
++
++	/* DRAM out of self-refresh */
++	str	r4, [r1, #HW_DRAM_CTL22]
++	mov	r3, #(24 << 12)
++5:	subs	r3, r3, #1
++	bne	5b
++
++	/* CPU back onto the PLL */
++	mov	r3, #BM_CLKCTRL_CLKSEQ_BYPASS_CPU
++	str	r3, [r0, #HW_CLKCTRL_CLKSEQ + CLR]
++
++	ldmfd	sp!, {r4 - r6, pc}
++ENDPROC(mx28_suspend_in_ocram)
++
++	.align	2
++ENTRY(mx28_suspend_in_ocram_sz)
++	.word	. - mx28_suspend_in_ocram
