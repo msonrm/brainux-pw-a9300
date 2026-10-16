@@ -19,7 +19,7 @@ sudo sh system/setup-stability.sh
 
 unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入ります。
 
-## 2. カーネル（音声ドライバ・バックライト・蓋）
+## 2. カーネル（音声ドライバ・バックライト・蓋・サブ液晶・眠り方）
 
 PC で:
 
@@ -30,6 +30,10 @@ git checkout a9f534c7
 git apply ../brainux-pw-a9300/kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch
 git apply ../brainux-pw-a9300/kernel/0002-pwm-mxs-drive-inactive-level-before-stop.patch
 git apply ../brainux-pw-a9300/kernel/0003-brain-kbd-i2c-lid-switch-and-wakeup.patch
+git apply ../brainux-pw-a9300/kernel/0004-drm-tiny-brain-st7586-fix-the-2-bit-pixel-of-each-byte.patch
+git apply ../brainux-pw-a9300/kernel/0005-iio-adc-mxs-lradc-adc-only-clear-our-own-interrupt-flags.patch
+git apply ../brainux-pw-a9300/kernel/0006-Input-mxs-lradc-ts-only-clear-the-touch-detect-flag.patch
+git apply ../brainux-pw-a9300/kernel/0007-ARM-dts-imx28-pwa7200-give-the-bookmark-home-and-dictionary-menu-keys-a-code.patch
 git apply ../brainux-pw-a9300/kernel/0008-dmaengine-mxs-dma-do-not-reset-the-block-on-resume.patch
 git apply ../brainux-pw-a9300/kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch
 git apply ../brainux-pw-a9300/kernel/0010-drm-tiny-brain-lq050j1ug01-stop-the-LCDIF-for-suspend-and-recover-a-stuck-transfer.patch
@@ -39,7 +43,7 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build brain_defconfig
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build -j8 zImage dtbs modules
 ```
 
-0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）、0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするためのものです（[audio-ymu818.md](audio-ymu818.md)。眠り方の既定は s2idle なので、0009 は `deep` を選んだときだけ働きます）。音だけでよければ 0001 だけでも動きます。
+0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）。0004〜0007 はサブ液晶と枠のボタンのためで、subpaneld はこれを前提にしています。0004 はサブ液晶の 3 画素ごとに縦線が出るのを直し、0005・0006 はタッチが押されたまま固まるのを直し（タッチと電池の電圧を読む ADC が割り込みのフラグを取り合っていた）、0007 はメイン液晶の枠のしおり・Home・辞書メニューのボタンに F13〜F15 を割り当てます（DTS の変更なので DTB に入ります。どれも [subpanel.md](subpanel.md)）。0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするためのものです（[audio-ymu818.md](audio-ymu818.md)）。0009 は眠り方が `deep` のときだけ働きます（カーネルの既定は s2idle。下の「サスペンド」の設定で `deep` にします）。音だけでよければ 0001 だけでも動きます。
 
 `git apply` で当てると、カーネルの版は `6.1.70-ga9f534c7f53e-dirty` になります。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。
 

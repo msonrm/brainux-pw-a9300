@@ -4,7 +4,7 @@
 
 | 対象 | ライセンス |
 |---|---|
-| `kernel/0001-*.patch`、`kernel/rtl8xxxu66/`（パッチ・スクリプト。取ってくる rtl8xxxu のソースを含む） | GPL-2.0（Linux カーネルに従う。`ymu818.c` は GPL-2.0-only、`mxs-ymu818.c` は GPL-2.0-or-later） |
+| `kernel/`（`*.patch`、`rtl8xxxu66/`・`uinput/` のパッチ・スクリプト。取ってくる rtl8xxxu・uinput のソースを含む） | GPL-2.0（Linux カーネルに従う。`ymu818.c` は GPL-2.0-only、`mxs-ymu818.c` は GPL-2.0-or-later。`0011` は上流の Linux の修正で、作者はパッチの From: の人） |
 | `mucom88/0001-*.patch` | CC BY-NC-SA 4.0（OPEN MUCOM88 に従う。https://github.com/onitama/mucom88 の license.txt を参照） |
 | `mucom88/rhythm/` | 作者（メモルさん）の配布条件に従う（`PROVENANCE_2608modoki2.utf8.txt`。配布・組み込み自由） |
 | 上記以外（`tools/`、`userspace/`、`system/`、`mucom88/*.sh`、`docs/`） | MIT License（下記） |
