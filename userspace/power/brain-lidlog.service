@@ -1,0 +1,9 @@
+[Unit]
+Description=Log the lid and 5V switches with the kernel's timestamps
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/brain-lidlog
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

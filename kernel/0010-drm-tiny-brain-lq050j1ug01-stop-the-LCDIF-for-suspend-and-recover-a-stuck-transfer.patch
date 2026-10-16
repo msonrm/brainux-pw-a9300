@@ -1,0 +1,191 @@
+From: brainux-pw-a9300
+Subject: [PATCH] drm/tiny: brain-lq050j1ug01: stop the LCDIF for suspend and recover a stuck transfer
+
+The driver had no system sleep callbacks, so the LCDIF was left as it
+was across a suspend, and .disable only gated its clock: a transfer
+still running at that point (or one cut off when the DRAM goes into
+self-refresh in suspend-to-mem) leaves CTRL_RUN set. .disable also left
+the enabled flag set, so damage updates kept touching the block while
+its clock was off. Once CTRL_RUN stuck, every update waited 1 s and gave
+up with "Exceeded timeout", and the panel, which keeps its own frame
+memory, showed the old picture until the pipe was disabled and enabled
+again.
+
+- Add sleep callbacks using drm_mode_config_helper_suspend()/resume(),
+  so the pipe is disabled before a suspend and re-enabled (block reset
+  and panel init) after it.
+- In .disable, clear the enabled flag first and wait for a running
+  transfer before gating the clock.
+- When a transfer still has not finished after the timeout, log the
+  LCDIF registers and the clock state once, then reset the block and
+  initialize the panel again, so the display comes back by itself.
+- Split the block reset and panel init out of .enable for the above.
+
+Seen on Brain PW-A9300 after a suspend-to-mem of 10 hours, the lid
+switch reporting closed right after the wake-up, and a second suspend
+of 4 s: the LCDIF timed out once a second for 6 minutes until the next
+suspend and resume.
+
+diff --git a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+index 8a11ca82d..96a184a8c 100644
+--- a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
++++ b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+@@ -16,6 +16,7 @@
+ 
+ #include <linux/backlight.h>
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/delay.h>
+ #include <linux/gpio.h>
+ #include <linux/gpio/consumer.h>
+@@ -53,6 +54,7 @@ struct brain_drm_private {
+ 	struct platform_device *pdev;
+ 	struct clk *clk_lcdif;
+ 	bool enabled;
++	bool reported;		/* registers of a stuck transfer logged once */
+ 
+ 	struct drm_simple_display_pipe pipe;
+ 	struct drm_connector connector;
+@@ -267,26 +269,20 @@ static void brain_set_bus_fmt(struct brain_drm_private *ili)
+ }
+ 
+ 
+-static void brain_enable(struct drm_simple_display_pipe *pipe,
+-			     struct drm_crtc_state *crtc_state,
+-			     struct drm_plane_state *plane_state)
++/*
++ * Reset the LCDIF and initialize the panel. Called with the LCDIF clock on,
++ * from brain_enable() and again when a transfer never finishes.
++ */
++static void brain_hw_init(struct brain_drm_private *ili,
++			  struct drm_plane_state *plane_state)
+ {
+-	struct brain_drm_private *ili;
+-	struct drm_display_mode *m = &crtc_state->adjusted_mode;
+-	int i, ret, idx;
++	struct drm_display_mode *m = &ili->pipe.crtc.state->adjusted_mode;
++	int i, ret;
+ 	u32 valid;
+ #if 0
+ 	u8 mac = 0;
+ #endif
+ 
+-	ili = pipe_to_private(pipe);
+-	m = &ili->pipe.crtc.state->adjusted_mode;
+-
+-	if (!drm_dev_enter(pipe->crtc.dev, &idx))
+-		return;
+-
+-	clk_prepare_enable(ili->clk_lcdif);
+-
+ 	ret = brain_reset_block(ili->base);
+ 	if (ret)
+ 		return;
+@@ -390,18 +386,58 @@ static void brain_enable(struct drm_simple_display_pipe *pipe,
+ 
+ 	/* Ready to transmit */
+ 	writel(CTRL_MASTER | CTRL_RUN, ili->base + LCDC_CTRL + REG_SET);
++}
++
++static void brain_enable(struct drm_simple_display_pipe *pipe,
++			     struct drm_crtc_state *crtc_state,
++			     struct drm_plane_state *plane_state)
++{
++	struct brain_drm_private *ili = pipe_to_private(pipe);
++	int idx;
++
++	if (!drm_dev_enter(pipe->crtc.dev, &idx))
++		return;
++
++	clk_prepare_enable(ili->clk_lcdif);
++	brain_hw_init(ili, plane_state);
+ 	ili->enabled = true;
++
++	drm_dev_exit(idx);
+ }
+ 
+ static void brain_disable(struct drm_simple_display_pipe *pipe)
+ {
+ 	struct brain_drm_private *ili = pipe_to_private(pipe);
+ 
++	/*
++	 * Stop sending before the clock goes: a transfer cut off by the clock
++	 * (or by the DRAM going into self-refresh in a suspend) leaves CTRL_RUN
++	 * set, and every later update times out until the block is reset.
++	 */
++	ili->enabled = false;
++	if (brain_clear_poll(ili->base + LCDC_CTRL, CTRL_RUN, TX_TIMEOUT))
++		dev_warn(&ili->pdev->dev, "transfer still running at disable\n");
+ 	clk_disable_unprepare(ili->clk_lcdif);
+-	return;
+ }
+ 
+-static void brain_fb_dirty_full(struct brain_drm_private *ili, struct drm_framebuffer *fb, struct drm_rect *rect) {
++static void brain_recover(struct brain_drm_private *ili,
++			  struct drm_plane_state *plane_state)
++{
++	if (!ili->reported) {
++		ili->reported = true;
++		dev_warn(&ili->pdev->dev,
++			 "transfer stuck: CTRL %08x CTRL1 %08x STAT %08x DEBUG0 %08x, clock %s %lu Hz\n",
++			 readl(ili->base + LCDC_CTRL), readl(ili->base + LCDC_CTRL1),
++			 readl(ili->base + LCDC_STAT), readl(ili->base + LCDC_V4_DEBUG0),
++			 __clk_is_enabled(ili->clk_lcdif) ? "on" : "off",
++			 clk_get_rate(ili->clk_lcdif));
++	}
++	dev_warn(&ili->pdev->dev, "resetting the LCDIF and the panel\n");
++	brain_hw_init(ili, plane_state);
++}
++
++static void brain_fb_dirty_full(struct brain_drm_private *ili, struct drm_plane_state *plane_state,
++				struct drm_framebuffer *fb, struct drm_rect *rect) {
+ 	struct drm_gem_dma_object *dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
+ 	int idx;
+ 
+@@ -419,7 +455,9 @@ static void brain_fb_dirty_full(struct brain_drm_private *ili, struct drm_frameb
+ 
+ 	if (brain_clear_poll(ili->base + LCDC_CTRL, CTRL_RUN, TX_TIMEOUT)) {
+ 		dev_warn(&ili->pdev->dev, "Exceeded timeout\n");
+-		goto timeout_exit;
++		brain_recover(ili, plane_state);
++		if (brain_clear_poll(ili->base + LCDC_CTRL, CTRL_RUN, TX_TIMEOUT))
++			goto timeout_exit;
+ 	}
+ 
+ #if 1
+@@ -468,7 +506,7 @@ static void brain_update(struct drm_simple_display_pipe *pipe,
+ 	struct drm_rect rect;
+ 
+ 	if (drm_atomic_helper_damage_merged(old_state, state, &rect))
+-		brain_fb_dirty_full(ili, state->fb, &rect);
++		brain_fb_dirty_full(ili, state, state->fb, &rect);
+ 
+ 	if (crtc->state->event) {
+ 		spin_lock_irq(&crtc->dev->event_lock);
+@@ -684,6 +722,18 @@ static void brain_shutdown(struct platform_device *pdev)
+ 	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
+ }
+ 
++static int brain_pm_suspend(struct device *dev)
++{
++	return drm_mode_config_helper_suspend(dev_get_drvdata(dev));
++}
++
++static int brain_pm_resume(struct device *dev)
++{
++	return drm_mode_config_helper_resume(dev_get_drvdata(dev));
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(brain_pm_ops, brain_pm_suspend, brain_pm_resume);
++
+ static struct platform_driver brain_platform_driver = {
+ 	.probe	= brain_probe,
+ 	.remove	= brain_remove,
+@@ -691,6 +741,7 @@ static struct platform_driver brain_platform_driver = {
+ 	.driver = {
+ 		.name   = "brain-2g",
+ 		.of_match_table = brain_of_match,
++		.pm = pm_sleep_ptr(&brain_pm_ops),
+ 	},
+ };
+ 
