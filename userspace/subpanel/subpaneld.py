@@ -30,12 +30,19 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   they would be stale. Any suspend (lid too) draws the moon through
   brain-subpanel-sleep (SIGUSR1 before, SIGUSR2 after waking, which brings
   the normal picture back).
+- Apps (APP_SOCK): an app that plays with the lid closed (pmd-app, through
+  headphones) asks over a Unix socket, line by line: "keep-awake 1" / "0".
+  While any connected app asks, this holds logind's handle-lid-switch block
+  inhibitor (an ordinary user is refused one: Brainux has no polkit), and the
+  lid closing turns both backlights off until it opens. When the app lets go
+  (or goes away) with the lid closed, logind sleeps then. The battery
+  running out (the empty mark) is sent to the apps as "battery-empty".
 Needs uinput.ko (kernel/uinput). Raw coordinates are in docs/subpanel.md.
 The sub panel only shows anything once X stops holding card1 (docs/subpanel.md).
 
 Usage: subpaneld.py [-v]
 """
-import fcntl, mmap, os, re, select, signal, struct, subprocess, sys, time
+import fcntl, mmap, os, re, select, signal, socket, struct, subprocess, sys, time
 
 TOUCH = "mxs-lradc-ts"                  # input device names
 MAIN_TOUCH = "SX8654 I2C Touchscreen"
@@ -84,6 +91,9 @@ REWIND_SPEED = 4                    # the ring runs back this much faster
 FRAME = 1 / 30                      # seconds between frames of the ring
 ASLEEP_ACK = "/run/subpaneld-asleep"     # brain-subpanel-sleep waits for it
 PID_FILE = "/run/subpaneld.pid"
+APP_SOCK = "/run/subpaneld.sock"         # apps: keep-awake (docstring)
+INHIBIT_CMD = ["systemd-inhibit", "--what=handle-lid-switch", "--mode=block",
+               "--who=subpaneld", "--why=an app plays with the lid closed", "cat"]
 SUSPEND_TRIES = 15.0                # seconds to keep asking for the suspend
 SUSPEND_AGAIN = 6.0                 # ask again if it has not started by then (the
                                     # hook comes 3-4 s after logind takes it)
@@ -92,7 +102,8 @@ SUSPEND_CMD = ["busctl", "call", "org.freedesktop.login1", "/org/freedesktop/log
 TAP_TIME = 0.35
 LONG_TIME = 0.6
 
-EV_SYN, EV_KEY, EV_REL, EV_ABS = 0, 1, 2, 3
+EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_SW = 0, 1, 2, 3, 5
+SW_LID = 0
 ABS_X, ABS_Y, BTN_TOUCH = 0, 1, 0x14a
 REL_X, REL_Y = 0, 1
 BTN_LEFT, BTN_RIGHT, KEY_ESC = 0x110, 0x111, 1
@@ -727,6 +738,109 @@ class PowerUI:
         self.status.update(time.monotonic(), force=True)
 
 
+class Apps:
+    """Apps that want the lid not to suspend (docstring at the top).
+
+    The inhibitor is held by systemd-inhibit running cat: closing its stdin
+    lets go, and so does this process going away."""
+
+    def __init__(self):
+        try:
+            os.unlink(APP_SOCK)
+        except FileNotFoundError:
+            pass
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(APP_SOCK)
+        os.chmod(APP_SOCK, 0o666)
+        self.srv.listen(4)
+        self.srv.setblocking(False)
+        self.clients = {}           # fd -> [socket, wants keep-awake, partial line]
+        self.hold = None            # systemd-inhibit while held
+        self.lid = False            # closed
+        self.dark = False           # backlights turned off by us
+        self.empty = False          # battery-empty already sent
+
+    def fds(self):
+        return [self.srv.fileno(), *self.clients]
+
+    def ready(self, fds):
+        if self.srv.fileno() in fds:
+            try:
+                c, _ = self.srv.accept()
+                c.setblocking(False)
+                self.clients[c.fileno()] = [c, False, b""]
+                log("app connected")
+            except OSError:
+                pass
+        for fd in [fd for fd in fds if fd in self.clients]:
+            cl = self.clients[fd]
+            try:
+                data = cl[0].recv(256)
+            except BlockingIOError:
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                cl[0].close()
+                del self.clients[fd]
+                log("app gone")
+                continue
+            *lines, cl[2] = (cl[2] + data).split(b"\n")
+            for line in lines:
+                if line.startswith(b"keep-awake "):
+                    cl[1] = line.endswith(b"1")
+                    log(f"app keep-awake {int(cl[1])}")
+        self.sync()
+
+    def sync(self):
+        want = any(cl[1] for cl in self.clients.values())
+        if want and not self.hold:
+            self.hold = subprocess.Popen(INHIBIT_CMD, stdin=subprocess.PIPE,
+                                         stdout=subprocess.DEVNULL)
+            log("lid inhibitor taken")
+        elif not want and self.hold:
+            self.hold.stdin.close()
+            try:
+                self.hold.wait(2)
+            except subprocess.TimeoutExpired:
+                self.hold.kill()
+            self.hold = None
+            log("lid inhibitor released")
+        self.backlight()
+
+    def lid_switch(self, closed):
+        self.lid = closed
+        self.backlight()
+
+    def backlight(self):
+        dark = self.lid and self.hold is not None
+        if dark == self.dark:
+            return
+        self.dark = dark
+        for bl in (BACKLIGHT, SUB_BACKLIGHT):
+            try:
+                with open(f"{bl}/bl_power", "w") as f:
+                    f.write("4" if dark else "0")    # FB_BLANK_POWERDOWN / UNBLANK
+            except OSError as e:
+                log(f"{bl}: {e}")
+        log(f"backlights {'off' if dark else 'on'}")
+
+    def battery(self, bars):
+        """Tell the apps once when the empty mark shows."""
+        if bars is None:
+            return
+        if bars > 0:
+            self.empty = False
+        elif not self.empty:
+            self.empty = True
+            log("battery empty")
+            for cl in self.clients.values():
+                try:
+                    cl[0].send(b"battery-empty\n")
+                except OSError:
+                    pass
+
+
 def button_at(y):
     return next(name for limit, name in BUTTONS if y > limit)
 
@@ -842,6 +956,9 @@ def main():
     power = PowerUI(status)
     kbd_dev = find_event(KBD, required=False)
     kbd = os.open(kbd_dev, os.O_RDONLY | os.O_NONBLOCK) if kbd_dev else None
+    apps = Apps()
+    if kbd is not None:             # EVIOCGSW(8): the lid as it is now
+        apps.lid = bool(fcntl.ioctl(kbd, 0x8008451b, bytes(8))[0] & 1)
     # signals from brain-subpanel-sleep arrive through a pipe, so the drawing
     # happens in the loop and never in the middle of another frame
     sig_r, sig_w = os.pipe()
@@ -863,7 +980,7 @@ def main():
             elif power.polling:
                 wait = min(wait, 0.2)
             fds = [touch, main_touch, sig_r] + [d for d in (jack, kbd) if d is not None]
-            r, _, _ = select.select(fds, [], [], wait)
+            r, _, _ = select.select(fds + apps.fds(), [], [], wait)
             now = time.monotonic()
             if sig_r in r:
                 for signum in os.read(sig_r, 64):
@@ -877,6 +994,8 @@ def main():
                     typ, code, val = struct.unpack_from("<HHi", data, i + 8)
                     if typ == EV_KEY and code == KEY_POWER and val in (0, 1):
                         power.key(val == 1, now)
+                    elif typ == EV_SW and code == SW_LID:
+                        apps.lid_switch(val == 1)
             power.tick(now)
             if jack in r:
                 os.read(jack, 16 * 64)
@@ -901,9 +1020,11 @@ def main():
                             st = None
                     elif typ == EV_SYN and st and x is not None:
                         on_sample(st, x, y, sec + usec / 1e6, mouse)
+            apps.ready(r)
             check_long(st, now, mouse)
             if not power.animating:     # reading the volume runs amixer, slow on the Brain
                 status.update(now)
+                apps.battery(status.bars)
     finally:
         mouse.close()
         ts.close()

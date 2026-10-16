@@ -1,0 +1,70 @@
+From: brainux-pw-a9300
+Subject: [PATCH] ASoC: ymu818: turn the amp off for suspend
+
+The card keeps MCLK running from SAIF0 all the time (the YMU818 PLL
+needs it), and suspend-to-mem stops PLL0 and with it MCLK. A stream
+left open over a suspend kept the output path and its amp on while
+the clock stopped, and the headphones got loud noise for as long as
+the system slept. An app that pauses its stream for the suspend still
+has it open (SDL keeps writing silence while paused).
+
+- Add a system sleep callback to the codec that turns the path off
+  when a stream is running. The path is turned on again by the next
+  prepare.
+- Give the card snd_soc_pm_ops, so open streams are suspended and the
+  app has to prepare them again after waking (snd_pcm_recover). Without
+  it the stream only came back through the underrun that happened to
+  follow the wake-up, which would not have turned the path on again.
+
+Seen on Brain PW-A9300 with pmd-app paused by the lid: the noise
+started when the system went to sleep, about 5 s after closing the lid.
+
+diff --git a/sound/soc/codecs/ymu818.c b/sound/soc/codecs/ymu818.c
+--- a/sound/soc/codecs/ymu818.c
++++ b/sound/soc/codecs/ymu818.c
+@@ -637,6 +637,25 @@
+ 	release_firmware(ymu->fw);
+ }
+ 
++/*
++ * A stream left open over a suspend (paused by the app, still writing
++ * silence) would keep the amp on while the clocks stop, and the headphones
++ * get loud noise for as long as the system sleeps. Turn the path off; after
++ * waking, the stream is prepared again (snd_pcm_recover) and turns it on.
++ */
++static int ymu818_suspend(struct device *dev)
++{
++	struct ymu818_priv *ymu = dev_get_drvdata(dev);
++
++	mutex_lock(&ymu->lock);
++	if (ymu->running)
++		ymu818_stop(ymu);
++	mutex_unlock(&ymu->lock);
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(ymu818_pm_ops, ymu818_suspend, NULL);
++
+ static const struct of_device_id ymu818_of_match[] = {
+ 	{ .compatible = "yamaha,ymu818" },
+ 	{ }
+@@ -653,6 +672,7 @@
+ 	.driver = {
+ 		.name = "ymu818",
+ 		.of_match_table = ymu818_of_match,
++		.pm = pm_sleep_ptr(&ymu818_pm_ops),
+ 	},
+ 	.probe_new	= ymu818_i2c_probe,
+ 	.remove		= ymu818_i2c_remove,
+diff --git a/sound/soc/mxs/mxs-ymu818.c b/sound/soc/mxs/mxs-ymu818.c
+--- a/sound/soc/mxs/mxs-ymu818.c
++++ b/sound/soc/mxs/mxs-ymu818.c
+@@ -117,6 +117,8 @@
+ 	.driver = {
+ 		.name = "mxs-ymu818",
+ 		.of_match_table = mxs_ymu818_dt_ids,
++		/* suspend open streams, so they are prepared again after waking */
++		.pm = &snd_soc_pm_ops,
+ 	},
+ 	.probe = mxs_ymu818_probe,
+ 	.remove = mxs_ymu818_remove,

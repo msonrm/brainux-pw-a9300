@@ -126,6 +126,19 @@ Brain では `/usr/local/bin/subpaneld`、`subpaneld.service`（`-v` で詳し�
 - 30 秒ごとの状態の読み直し（`amixer` を 2〜3 回起動して 1 秒近くかかる）は、円が動いている間はしない（円が 1 秒止まって飛んだ）
 - サブ液晶を 1 秒に 30 回描き直すと、ときどき SPI が 10 秒止まって `brain-st7586 spi1.0: error -110 when sending command 0x2a` になった（3 分で 2 回）。上流の spi-mxs の修正の取り込み漏れで、`kernel/0011` で直した（4 分で 0 回）
 
+### 蓋を閉じたまま鳴らすアプリ（2026-10-16）
+
+pmd-hle の再生器（`pmd-app`）は、イヤホンで鳴らしている間は蓋を閉じても鳴らし続ける（本人と決めた）。そのために logind の handle-lid-switch の inhibitor が要るが、Brainux には polkit がなく、ふつうのユーザーには取らせてもらえない（`Access denied`）。polkitd を入れる案もあったが、常駐が一つ増えるのと、バックライトと電池の見張りも root が要るので、root で動く subpaneld が代わりに引き受けることにした（本人が選んだ）。
+
+- `/run/subpaneld.sock`（Unix ソケット、mode 0666）。アプリは 1 行ずつ `keep-awake 1` / `keep-awake 0` を送る。つないでいるアプリのどれかが 1 なら、subpaneld が `systemd-inhibit --what=handle-lid-switch --mode=block … cat` を走らせて inhibitor を持つ。どれも 0 になるか、アプリが落ちて接続が切れたら、`cat` の stdin を閉じて外す。蓋が閉じていれば logind がそこで眠る
+- 頼まれている間に蓋が閉じたら（キーボードの SW_LID。起動のときは EVIOCGSW で読む）、メイン液晶とサブ液晶のバックライトを `bl_power` = 4 で消し、開けたら 0 に戻す
+- 電池の表示が空（×）になったら、つないでいるアプリに 1 度だけ `battery-empty` を送る（アプリは曲を止める）
+- 確かめたこと（#18、2026-10-16、本人がイヤホンで）: 鳴らしたまま蓋を閉じると鳴り続け、両方のバックライトが消える。閉じたままイヤホンを抜くと、アプリが止めて頼みを外し、logind が眠る。電池が空の知らせはアプリに届いた（電池が切れかけたとき）
+- 残っていること:
+  - 空の知らせは 30 秒ごとの読み直しで 2 回続けて同じときだけなので、最長 1 分ほど遅れる。空の表示から Brain が止まるまでは約 2 分しかなかった（2026-10-16、5V があっても止まった。弱った電池）。止まったのは Chromebook から Wi-Fi で送っていたとき（瞬間的に電流が増えたのかもしれない）で、まれなことなので、空の表示で止めるままにする（本人、2026-10-16）
+  - すでに空になってからつないだアプリには、知らせが届かない
+  - 眠る前に止め終わるのを待たせる delay の inhibitor（`--what=sleep --mode=delay`）は頼めない。今はほかの delay（NetworkManager・system-sleep のフック）で間に合っている
+
 ### メイン液晶の枠のボタン
 
 - メイン液晶のタッチ（SX8654）も掴む。表示の範囲（生の x 237〜3627。X の較正と同じ端）で始まったタッチは、uinput の「Brain main panel touchscreen」（0〜4095、INPUT_PROP_DIRECT）にそのまま流すので、X の較正（`99-calibrator.conf`）も今までどおり効く
