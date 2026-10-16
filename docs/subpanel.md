@@ -114,6 +114,17 @@ Brain では `/usr/local/bin/subpaneld`、`subpaneld.service`（`-v` で詳し�
   - 電池の段は見張りピン（`HW_PINCTRL_DIN4`）を 1 ms おきに 5 回読んだ多数決。GPIO4_8 が 0 → 空、GPIO4_7 が 0 → 1 段、GPIO4_4 が 0 → 2 段、それ以外 → 3 段（GPIO4_6 は使わない）。2 回続けて同じときだけ表示を変える
   - 5V は `HW_POWER_STS` の VBUSVALID
 - 30 秒ごとに状態を読み、触っていないあいだは select で眠る。描画は 1 回 6〜33 ms
+- `subpaneld.service` は `Nice=-10`（眠る準備で logind・NetworkManager・systemd が CPU を使う間も、下の円が止まらないように。タッチパッドの反応にも効く）
+
+### 入/切と眠り（2026-10-16）
+
+- 「入/切」（brain-kbd-i2c の `KEY_POWER`、掴まない）を押している間、帯の左に円を出し、logind の長押し（5 秒で電源オフ）に合わせて 5 秒で満たす（1 秒に 30 回描き直す）。満ちたら電源の印を黒くする（電源オフは logind がする）
+- 5 秒より前に離すと、円は 4 倍の速さで巻き戻り、0 まで戻ったら月を出して、subpaneld が `busctl call org.freedesktop.login1 … Suspend b false` で眠りを頼む。短押しは logind に任せない（`brain-power-key.conf` の `HandlePowerKey=ignore`）。月より先に眠りが始まらないように、と、起きた直後の押下を logind が黙って捨てるため。起きてから 3〜4 秒は前の眠りの後始末中で、頼んでも断られるか、受け付けられて何も起きないので、眠りが始まった（下の pre の合図が来た）とわかるまで 6 秒ごとに頼み直す（15 秒まで）。それでも、起こして 1 秒で押すと眠らないことがある（本人の判断で、そんな使い方はしないので追わない）
+- 眠りはどこから始まっても（蓋・`systemctl suspend`）、`system/usr/lib/systemd/system-sleep/brain-subpanel-sleep` が pre で SIGUSR1 を送り、subpaneld が月を描いて `/run/subpaneld-asleep` を作るのを 2 秒まで待つ（巻き戻しの途中なら、終えてから月）。月は画面の真ん中に 1 つだけで、音量・明るさ・電池の帯は消す（眠っている間に古い値を出さない。本人の希望）。サブ液晶は眠っている間もバックライトが消えるだけで絵が残るので、月が見えたままになる
+- 起きたら、CLOCK_BOOTTIME と CLOCK_MONOTONIC の差が飛んだこと（0009 が眠った時間を BOOTTIME に足す）で気づき、眠る前の絵に戻して帯を描き直す（月の間は 0.2 秒ごとに見る）。post の SIGUSR2 でも戻る
+- 起動のとき、円・月・電源の印の絵を先に描いておく（Python で数千の点を描くのは Brain では 1 秒近くかかり、押してから円が出るまで遅れた）。そのぶん subpaneld の起動に 5〜8 秒かかる
+- 30 秒ごとの状態の読み直し（`amixer` を 2〜3 回起動して 1 秒近くかかる）は、円が動いている間はしない（円が 1 秒止まって飛んだ）
+- サブ液晶を 1 秒に 30 回描き直すと、ときどき SPI が 10 秒止まって `brain-st7586 spi1.0: error -110 when sending command 0x2a` になった（3 分で 2 回）。上流の spi-mxs の修正の取り込み漏れで、`kernel/0011` で直した（4 分で 0 回）
 
 ### メイン液晶の枠のボタン
 

@@ -17,6 +17,19 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   speaker or headphone icon for the output in use, struck through at 0), the
   brightness and the battery, each next to its printed button. Plugging or
   unplugging the headphones redraws it at once.
+- Power key (入/切): while it is held, a ring fills on the sub panel in the
+  5 s logind waits before powering off (HandlePowerKeyLongPress). Let go
+  early and the ring runs back, a moon shows, and this asks for the suspend
+  (logind leaves the short press alone: HandlePowerKey=ignore, so the
+  suspend never starts before the moon). For a few seconds after waking,
+  logind refuses a suspend, or takes it and nothing happens (the last one is
+  still finishing), so this asks again until brain-subpanel-sleep says the
+  suspend has begun.
+  The moon fills the panel and stays while asleep (the panel keeps its
+  picture with the backlight off); volume and battery are hidden then, as
+  they would be stale. Any suspend (lid too) draws the moon through
+  brain-subpanel-sleep (SIGUSR1 before, SIGUSR2 after waking, which brings
+  the normal picture back).
 Needs uinput.ko (kernel/uinput). Raw coordinates are in docs/subpanel.md.
 The sub panel only shows anything once X stops holding card1 (docs/subpanel.md).
 
@@ -64,6 +77,18 @@ MAIN_LEFT = [(3000, "prev_heading"), (2000, "page_up"), (1050, "page_down"),
 MAIN_RIGHT = [(3450, "handwriting"), (2960, "kana_keys"), (2460, "memo"),
               (1950, "back"), (1400, "enter"), (790, "text_larger"),
               (-1, "text_smaller")]         # 手書き大 50音キー 暗記メモ 戻る 検索/決定 文字大 小
+KBD = "brain-kbd-i2c"                   # power key and lid (not grabbed)
+KEY_POWER = 116
+POWER_LONG = 5.0                    # logind's long press (power off) in seconds
+REWIND_SPEED = 4                    # the ring runs back this much faster
+FRAME = 1 / 30                      # seconds between frames of the ring
+ASLEEP_ACK = "/run/subpaneld-asleep"     # brain-subpanel-sleep waits for it
+PID_FILE = "/run/subpaneld.pid"
+SUSPEND_TRIES = 15.0                # seconds to keep asking for the suspend
+SUSPEND_AGAIN = 6.0                 # ask again if it has not started by then (the
+                                    # hook comes 3-4 s after logind takes it)
+SUSPEND_CMD = ["busctl", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
+               "org.freedesktop.login1.Manager", "Suspend", "b", "false"]
 TAP_TIME = 0.35
 LONG_TIME = 0.6
 
@@ -278,17 +303,29 @@ FBIOGET_VSCREENINFO, FBIOPUT_VSCREENINFO = 0x4600, 0x4601
 FB_ACTIVATE_FORCE = 128
 
 
-class Panel:
+class Canvas:
+    """A picture of the whole sub panel in memory."""
+
     def __init__(self):
-        self.fd = os.open(FB, os.O_RDWR)
-        var = bytearray(160)
-        fcntl.ioctl(self.fd, FBIOGET_VSCREENINFO, var)
-        var[84:88] = FB_ACTIVATE_FORCE.to_bytes(4, "little")  # .activate
-        try:
-            fcntl.ioctl(self.fd, FBIOPUT_VSCREENINFO, var)
-        except OSError as e:  # EBUSY while X holds card1; fine if already enabled
-            log(f"modeset: {e}")
         self.buf = bytearray(WHITE * (W * H))
+
+    def left(self):
+        """Copy of the area left of the strip."""
+        return bytes(self.buf)
+
+    def put_all(self, pic):
+        self.buf[:] = pic
+
+    def put_left(self, pic):
+        """Put back the area left of the strip from a copy (rows of x 0..STRIP_X-1)."""
+        n = STRIP_X * 4
+        for y in range(H):
+            o = y * W * 4
+            self.buf[o:o + n] = pic[o:o + n]
+
+    def point(self, x, y, color):
+        o = (y * W + x) * 4
+        self.buf[o:o + 4] = color
 
     def rect(self, x0, y0, x1, y1, color):
         """Fill x0..x1, y0..y1 (inclusive)."""
@@ -317,6 +354,20 @@ class Panel:
         self.rect(x0, y1, x1, y1, color)
         self.rect(x0, y0, x0, y1, color)
         self.rect(x1, y0, x1, y1, color)
+
+
+
+class Panel(Canvas):
+    def __init__(self):
+        self.fd = os.open(FB, os.O_RDWR)
+        var = bytearray(160)
+        fcntl.ioctl(self.fd, FBIOGET_VSCREENINFO, var)
+        var[84:88] = FB_ACTIVATE_FORCE.to_bytes(4, "little")  # .activate
+        try:
+            fcntl.ioctl(self.fd, FBIOPUT_VSCREENINFO, var)
+        except OSError as e:  # EBUSY while X holds card1; fine if already enabled
+            log(f"modeset: {e}")
+        super().__init__()
 
     def flush(self):
         t = time.monotonic()
@@ -452,6 +503,230 @@ class Status:
             self.shown = cur
 
 
+# --- power key and sleep, on the sub panel left of the strip ----------------
+CX, CY = STRIP_X // 2, H // 2       # ring centre
+RING_R, RING_W = 46, 10             # outer radius, width
+
+
+def _ring_pixels():
+    """Pixels of the ring sorted clockwise from 12 o'clock: (angle 0-1, x, y,
+    edge). Edge pixels are half covered: dark when filled, left white when not."""
+    import math
+    out = []
+    r_in = RING_R - RING_W
+    for y in range(CY - RING_R - 1, CY + RING_R + 2):
+        for x in range(CX - RING_R - 1, CX + RING_R + 2):
+            d = math.hypot(x - CX, y - CY)
+            if r_in <= d <= RING_R:
+                edge = False
+            elif r_in - 0.7 <= d < r_in or RING_R < d <= RING_R + 0.7:
+                edge = True
+            else:
+                continue
+            a = math.atan2(x - CX, CY - y) / (2 * math.pi) % 1.0
+            out.append((a, x, y, edge))
+    out.sort()
+    return out
+
+
+def _power_icon():
+    """Pixels of the power symbol (an open circle and a bar) inside the ring."""
+    import math
+    out = []
+    for y in range(CY - 20, CY + 18):
+        for x in range(CX - 18, CX + 19):
+            d = math.hypot(x - CX, y - CY)
+            a = abs(math.degrees(math.atan2(x - CX, CY - y)))
+            if (13 <= d <= 16.5 and a > 35) or (abs(x - CX) <= 1 and CY - 20 <= y <= CY - 3):
+                out.append((x, y))
+    return out
+
+
+def _moon(c):
+    """A crescent in the middle of the whole panel (the strip is hidden)."""
+    import math
+    cx = W // 2
+    for y in range(CY - 30, CY + 31):
+        for x in range(cx - 30, cx + 31):
+            if math.hypot(x - cx, y - CY) <= 28 and \
+                    math.hypot(x - cx - 13, y - CY + 9) > 24:
+                c.point(x, y, BLACK)
+
+
+class PowerUI:
+    """Ring while the power key is held, moon while asleep.
+
+    The pictures are drawn once at start-up (Python draws a few thousand
+    pixels slowly on the Brain); a frame then only touches the ring pixels
+    that change."""
+
+    def __init__(self, status):
+        self.status = status
+        self.panel = status.panel
+        self.state = "idle"         # idle, fill, rewind, moon, off
+        self.filled = 0             # ring pixels drawn filled
+        self.frac = 0.0
+        self.t0 = 0.0
+        self.moon_until = None      # key path: back to idle if no suspend came
+        self.ack = False            # brain-subpanel-sleep waits for the moon
+        self.normal = None          # the picture to put back after waking
+        self.suspend = None         # (systemctl process, give up at) while asking
+        self.offset = None          # CLOCK_BOOTTIME - CLOCK_MONOTONIC
+        if not self.panel:
+            return
+        self.ring = _ring_pixels()
+        self.angles = [p[0] for p in self.ring]
+        self.icon = _power_icon()
+        c = Canvas()
+        for _, x, y, edge in self.ring:
+            if not edge:
+                c.point(x, y, LIGHT)
+        for x, y in self.icon:
+            c.point(x, y, DARK)
+        self.ring_pic = c.left()
+        c = Canvas()
+        _moon(c)
+        self.moon_pic = c.left()
+
+    @property
+    def animating(self):
+        return self.state in ("fill", "rewind")
+
+    @property
+    def polling(self):
+        """Asleep, or about to be: watch for the wake-up."""
+        return self.state == "moon"
+
+    def _set(self, frac):
+        import bisect
+        frac = min(max(frac, 0.0), 1.0)
+        n = bisect.bisect_right(self.angles, frac) if frac < 1 else len(self.ring)
+        lo, hi = sorted((self.filled, n))
+        p = self.panel
+        for _, x, y, edge in self.ring[lo:hi]:
+            if n > self.filled:
+                p.point(x, y, DARK if edge else BLACK)
+            else:
+                p.point(x, y, WHITE if edge else LIGHT)
+        self.filled, self.frac = n, frac
+
+    def key(self, down, now):
+        if not self.panel:
+            return
+        if down:
+            if self.state == "idle":
+                self.normal = self.panel.left()
+            if self.state != "rewind":
+                self.panel.put_left(self.ring_pic)
+                self.filled, self.frac = 0, 0.0
+            self.t0 = now - self.frac * POWER_LONG
+            self.state = "fill"
+            log("power key down")
+        elif self.state == "fill":
+            self.t0, self.state = now, "rewind"
+            self.rewind_from = self.frac
+            log(f"power key up at {self.frac * POWER_LONG:.1f} s")
+        self.tick(now)
+
+    def tick(self, now):
+        if not self.panel:
+            return
+        if self.state == "fill":
+            self._set((now - self.t0) / POWER_LONG)
+            if self.frac >= 1:
+                for x, y in self.icon:
+                    self.panel.point(x, y, BLACK)
+                self.state = "off"
+                log("power key held: power off")
+            self.panel.flush()
+        elif self.state == "rewind":
+            self._set(self.rewind_from - (now - self.t0) * REWIND_SPEED / POWER_LONG)
+            if self.frac <= 0:
+                self.moon(now + SUSPEND_TRIES + 2)
+                self.ask_suspend(now)
+            else:
+                self.panel.flush()
+        elif self.state == "moon":
+            self.check_suspend(now)
+            if self.moon_until and now >= self.moon_until:
+                log("no suspend came")
+                self.wake()
+            elif self.slept():
+                log("woke up")
+                self.wake()
+
+    def ask_suspend(self, now, until=None):
+        """Short press: ask logind for the suspend (it ignores the key)."""
+        proc = subprocess.Popen(SUSPEND_CMD, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.suspend = (proc, now, until or now + SUSPEND_TRIES)
+
+    def check_suspend(self, now):
+        """Ask again until the suspend begins (asleep() clears the request)."""
+        if not self.suspend:
+            return
+        proc, asked, until = self.suspend
+        rc = proc.poll()
+        if rc is None:
+            return
+        if now >= until:
+            log("the suspend never began")
+            self.suspend = None
+        elif rc != 0 or now - asked >= SUSPEND_AGAIN:
+            log(f"suspend: {rc}, asking again")
+            self.ask_suspend(now, until)
+
+    def slept(self):
+        """True once after a suspend-to-mem (the kernel adds the time slept to
+        CLOCK_BOOTTIME, not to CLOCK_MONOTONIC)."""
+        off = time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+        jumped = self.offset is not None and off - self.offset > 0.5
+        self.offset = off
+        return jumped
+
+    def moon(self, until=None):
+        """Show the moon. until: give up waiting for the suspend then."""
+        if not self.panel or self.state == "off":
+            return
+        if self.state != "moon":
+            if self.state == "idle":
+                self.normal = self.panel.left()
+            self.panel.put_all(self.moon_pic)
+            self.panel.flush()
+            self.offset = None
+            self.slept()
+        self.state, self.moon_until = "moon", until
+        if self.ack:
+            self.ack, self.moon_until = False, None
+            with open(ASLEEP_ACK, "w"):
+                pass
+
+    def asleep(self):
+        """SIGUSR1 from brain-subpanel-sleep, just before suspending. A ring
+        that is running back finishes first (it is short)."""
+        self.ack = True
+        self.suspend = None
+        if self.state == "rewind":
+            return
+        self.moon()
+        self.moon_until = None
+
+    def wake(self):
+        """SIGUSR2 after waking, the clock jump, or no suspend: back to normal."""
+        try:
+            os.unlink(ASLEEP_ACK)
+        except FileNotFoundError:
+            pass
+        if not self.panel or self.state == "idle":
+            return
+        self.state, self.moon_until, self.suspend = "idle", None, None
+        if self.normal:
+            self.panel.put_all(self.normal)
+        self.panel.flush()
+        self.status.shown = None
+        self.status.update(time.monotonic(), force=True)
+
+
 def button_at(y):
     return next(name for limit, name in BUTTONS if y > limit)
 
@@ -564,6 +839,18 @@ def main():
     jack_dev = find_event(JACK, required=False)
     jack = os.open(jack_dev, os.O_RDONLY | os.O_NONBLOCK) if jack_dev else None
     status = Status()
+    power = PowerUI(status)
+    kbd_dev = find_event(KBD, required=False)
+    kbd = os.open(kbd_dev, os.O_RDONLY | os.O_NONBLOCK) if kbd_dev else None
+    # signals from brain-subpanel-sleep arrive through a pipe, so the drawing
+    # happens in the loop and never in the middle of another frame
+    sig_r, sig_w = os.pipe()
+    os.set_blocking(sig_w, False)
+    signal.set_wakeup_fd(sig_w)
+    for sig in (signal.SIGUSR1, signal.SIGUSR2):
+        signal.signal(sig, lambda *_: None)
+    with open(PID_FILE, "w") as f:
+        f.write(f"{os.getpid()}\n")
     log("ready")
     x = y = None
     st = None
@@ -571,9 +858,26 @@ def main():
         while True:
             # wake often only while touched (long press); else at the next poll
             wait = 0.05 if st else min(3600, max(0.05, status.next_poll - time.monotonic()))
-            r, _, _ = select.select([touch, main_touch] + ([jack] if jack else []),
-                                    [], [], wait)
+            if power.animating:
+                wait = FRAME
+            elif power.polling:
+                wait = min(wait, 0.2)
+            fds = [touch, main_touch, sig_r] + [d for d in (jack, kbd) if d is not None]
+            r, _, _ = select.select(fds, [], [], wait)
             now = time.monotonic()
+            if sig_r in r:
+                for signum in os.read(sig_r, 64):
+                    if signum == signal.SIGUSR1:
+                        power.asleep()
+                    elif signum == signal.SIGUSR2:
+                        power.wake()
+            if kbd is not None and kbd in r:
+                data = os.read(kbd, 16 * 64)
+                for i in range(0, len(data) - 15, 16):
+                    typ, code, val = struct.unpack_from("<HHi", data, i + 8)
+                    if typ == EV_KEY and code == KEY_POWER and val in (0, 1):
+                        power.key(val == 1, now)
+            power.tick(now)
             if jack in r:
                 os.read(jack, 16 * 64)
                 status.update(now, force=True)
@@ -598,7 +902,8 @@ def main():
                     elif typ == EV_SYN and st and x is not None:
                         on_sample(st, x, y, sec + usec / 1e6, mouse)
             check_long(st, now, mouse)
-            status.update(now)
+            if not power.animating:     # reading the volume runs amixer, slow on the Brain
+                status.update(now)
     finally:
         mouse.close()
         ts.close()

@@ -6,6 +6,9 @@ After=systemd-modules-load.service
 ExecStart=/usr/local/bin/subpaneld
 Restart=on-failure
 RestartSec=5
+# ahead of what runs while logind gets ready to suspend, so the ring on the
+# sub panel keeps moving (and the pointer too)
+Nice=-10
 
 [Install]
 WantedBy=multi-user.target

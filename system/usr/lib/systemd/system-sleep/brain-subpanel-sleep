@@ -1,0 +1,21 @@
+#!/bin/sh
+# systemd-sleep runs this with pre|post and the kind of sleep. Before
+# suspending, have subpaneld draw the moon on the sub panel (it stays there
+# while asleep) and wait for it, up to 2 s (a ring running back finishes first); after waking, have it draw the
+# normal picture again.
+pid=$(cat /run/subpaneld.pid 2>/dev/null) || exit 0
+case "$1" in
+pre)
+	rm -f /run/subpaneld-asleep
+	kill -USR1 "$pid" 2>/dev/null || exit 0
+	for i in $(seq 20); do
+		[ -e /run/subpaneld-asleep ] && break
+		sleep 0.1
+	done
+	sleep 0.1	# let the panel's deferred update go out over SPI
+	;;
+post)
+	kill -USR2 "$pid" 2>/dev/null
+	;;
+esac
+exit 0
