@@ -1,9 +1,9 @@
 [Unit]
-Description=Log memory/load/wifi every 10s (freeze diagnosis)
+Description=Log memory/load/wifi every 10s (freeze diagnosis; lowest priority so it never disturbs audio)
 
 [Service]
 ExecStart=/usr/local/bin/brain-watch.sh
-Nice=-5
+Nice=19
 
 [Install]
 WantedBy=multi-user.target
