@@ -14,6 +14,15 @@
 
 > **これはテストです。** 個人が自分の 1 台（PW-A9300）で試した自前ビルドで、brain-hackers の公式な成果物ではありません。ほかの機種では確かめていません。カーネルや DTB の差し替えは自己責任で、元のファイルを必ず残してください。
 
+> [!WARNING]
+> **Brainux や linux-brain に、音（YMU818）や電源まわりのコードを書こうとしている方は、次のファイルを読まないでください。**
+> 逆アセンブルの結果を含むか、逆アセンブルをした環境で書いたものです。読んでから書いたコードは、クリーンに書いたと説明できなくなります。
+>
+> - 音: [`kernel/0001`](kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch)、[`kernel/0012`](kernel/0012-ASoC-ymu818-turn-the-amp-off-for-suspend.patch)、[`tools/ymu818-fw/`](tools/ymu818-fw/)、`userspace/saif.c`・`ymu818.py`・`run-test.sh`、[docs/audio-ymu818.md](docs/audio-ymu818.md)
+> - 電源: [`kernel/0009`](kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch)、`userspace/power/` の `battpins.c`・`battvolt.c`・`battcheck.py`・`brain-5v-ilimit.c`・`ramp4p2.c`・`brain-power.sh`・`vbuswatch.py`、`userspace/subpanel/subpaneld.py` の電池の段階の部分、[docs/power-wince.md](docs/power-wince.md)
+>
+> これ以外のファイル（ほかのカーネルのパッチ、Wi-Fi、`system/`、`mucom88/`、subpaneld のほかの部分など）には、WinCE の解析を使っていません。
+
 ## 今の状態（2026-10-17）
 
 | 項目 | 状態 |
@@ -21,7 +30,7 @@
 | 音 | 内蔵スピーカー（モノラル）とイヤホン（ステレオ）で鳴る。再生中に抜き差しすると切り替わる。プチノイズ・途切れなし。鳴らしたまま眠っても雑音が出ない |
 | Wi-Fi | 電源付き USB ハブ + OTG ケーブル経由で、20 分の負荷試験を通過。起きたあとに子機が戻らなければ、ハブのポートの電源を入れ直してつなぎ直す |
 | サスペンド | 蓋を閉じるか「入/切」を短く押すと眠り、蓋を開けるかキーを押すと起きる。眠り方は `deep`（DRAM をセルフリフレッシュにし、PLL も止める。眠っていた時間は時計に足す）。新しいアルカリ電池で 10 時間眠っても、電池の見張りのピンは下がらなかった（s2idle では 5 時間半で 1 段下がった） |
-| 電池・USB 給電 | 電池の残量は 4 段階、電圧は LRADC で読める（換算の比は未決）。USB の 5V から取る電流の上限を 480 mA に上げ、動いている最中や眠っている間にハブを挿したら i.MX28 の 4P2 を立ち上げ直す（しないと電池から取り続ける）。CPU クロック・持ち時間は未測定（[docs/power.md](docs/power.md)） |
+| 電池・USB 給電 | 電池の残量は 4 段階、電圧は LRADC で読める（換算の比は未決）。USB の 5V から取る電流の上限を 480 mA に上げ、動いている最中や眠っている間にハブを挿したら i.MX28 の 4P2 を立ち上げ直す（しないと電池から取り続ける）。CPU クロック・持ち時間は未測定（[docs/power.md](docs/power.md)、電池と 5V の電流は [docs/power-wince.md](docs/power-wince.md)） |
 | サブ液晶（キーボードの下、240×120）・タッチ・ボタン | `subpaneld` が、タッチパッド（なぞる・タップ・長押し）、右端に印刷されたボタン（音量・明るさ・クリア）、状態の帯（音量・明るさ・電池・USB 給電）、メイン液晶の枠の 11 個のボタン、「入/切」の長押しの表示を受け持つ。鳴らしているアプリに頼まれたら、蓋を閉じても眠らない（[docs/subpanel.md](docs/subpanel.md)） |
 | MUCOM88 | サンプル曲 3 曲を、作りながら途切れなく再生できる。CPU 使用率は約 50% |
 
@@ -42,16 +51,7 @@
 
 **シャープのデータは入っていません。** YMU818 の設定手順（係数を含む）はシャープの WinCE ドライバの中にあるので、各自が自分の Brain から取り出して使います（[docs/audio-ymu818.md](docs/audio-ymu818.md)）。
 
-**WinCE の解析について。** 音と電源の一部は、シャープの WinCE のドライバを逆アセンブルし、エミュレーターで動かして調べた結果を使っています。音は `ymu818_wavdev.dll` を、電源は電池・電源のドライバと WinCE の本体を調べました。解析とコードを書くことは、同じ環境で coding agent（Claude Code）と進め、分けて行う手順（クリーンルーム）は踏んでいません。brain-hackers は 2026-10 に、DLL の逆アセンブルを根拠にしたコードにはクリーンルームの手順が要る、という方針を示しました。なので、ここのコードのうち該当するものは Brainux に提案しません。何を得てどこに使ったかは、[docs/audio-ymu818.md](docs/audio-ymu818.md) の「どうやって調べたか」と、[docs/power.md](docs/power.md) の「WinCE の解析との関係」に書いています。
-
-> [!WARNING]
-> **Brainux や linux-brain に、音（YMU818）や電源まわりのコードを書こうとしている方は、次のファイルを読まないでください。**
-> 逆アセンブルの結果を含むか、逆アセンブルをした環境で書いたものです。読んでから書いたコードは、クリーンに書いたと説明できなくなります。
->
-> - 音: [`kernel/0001`](kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch)、[`kernel/0012`](kernel/0012-ASoC-ymu818-turn-the-amp-off-for-suspend.patch)、[`tools/ymu818-fw/`](tools/ymu818-fw/)、`userspace/saif.c`・`ymu818.py`・`run-test.sh`、[docs/audio-ymu818.md](docs/audio-ymu818.md)
-> - 電源: [`kernel/0009`](kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch)、`userspace/power/` の `battpins.c`・`battvolt.c`・`brain-5v-ilimit.c`・`ramp4p2.c`・`brain-power.sh`、`userspace/subpanel/subpaneld.py` の電池の段階の部分、[docs/power.md](docs/power.md) の「WinCE の解析との関係」の表にある項目
->
-> これ以外のファイル（ほかのカーネルのパッチ、Wi-Fi、`system/`、`mucom88/`、subpaneld のほかの部分など）には、WinCE の解析を使っていません。
+**WinCE の解析について。** 音と電源の一部は、シャープの WinCE のドライバを逆アセンブルし、エミュレーターで動かして調べた結果を使っています。音は `ymu818_wavdev.dll` を、電源は電池・電源のドライバと WinCE の本体を調べました。解析とコードを書くことは、同じ環境で coding agent（Claude Code）と進め、分けて行う手順（クリーンルーム）は踏んでいません。brain-hackers は 2026-10 に、DLL の逆アセンブルを根拠にしたコードにはクリーンルームの手順が要る、という方針を示しました。なので、ここのコードのうち該当するものは Brainux に提案しません。何を得てどこに使ったかは、[docs/audio-ymu818.md](docs/audio-ymu818.md) の「どうやって調べたか」と、[docs/power-wince.md](docs/power-wince.md) の「WinCE の解析との関係」に書いています。
 
 ## 文書
 
@@ -59,14 +59,15 @@
 - [docs/audio-ymu818.md](docs/audio-ymu818.md) … 音声 IC の調べ方とドライバ
 - [docs/wifi-rtl8188eu.md](docs/wifi-rtl8188eu.md) … Wi-Fi が固まった原因と rtl8xxxu66
 - [docs/stability.md](docs/stability.md) … メモリ不足と unaligned access
-- [docs/power.md](docs/power.md) … CPU クロック、電源、電池、サスペンド
+- [docs/power.md](docs/power.md) … CPU クロック、電源、サスペンド
+- [docs/power-wince.md](docs/power-wince.md) … 電源のうち WinCE の解析とつながる部分（5V から取る電流と 4P2、電池の見張りピンと電圧、deep を作る `kernel/0009`）。Brainux にコードを書く方は読まないでください
 - [docs/subpanel.md](docs/subpanel.md) … サブ液晶・タッチ・ボタンと `subpaneld`
 - [docs/mucom88.md](docs/mucom88.md) … MUCOM88 のビルドと速さ
 
 ## 謝辞
 
 - [brain-hackers](https://github.com/brain-hackers) の Brainux、linux-brain、buildbrain
-- brain-hackers の [Scrapbox](https://scrapbox.io/brain-hackers/) の記録。電池の電圧の読み方は「PW-A9300」のページによります（[docs/power.md](docs/power.md)）。YMU818 には「YMU818b メモ」という先行の記録があります（こちらの解析はそれに頼っていません。[docs/audio-ymu818.md](docs/audio-ymu818.md)）
+- brain-hackers の [Scrapbox](https://scrapbox.io/brain-hackers/) の記録。電池の電圧の読み方は「PW-A9300」のページによります。YMU818 には「YMU818b メモ」という先行の記録があります（こちらの解析はそれに頼っていません。[docs/audio-ymu818.md](docs/audio-ymu818.md)）
 - OPEN MUCOM88（古代祐三さん、おにたま（ONION software）さん、ほか）、fmgen（cisc さん）
 - YM2608 風リズム音源音色データ 2608modoki2（メモルさん）
 - Linux の rtl8xxxu（Jes Sorensen さん、ほか）

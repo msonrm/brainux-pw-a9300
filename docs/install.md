@@ -138,7 +138,7 @@ sudo install -D -m 644 userspace/power/brain-5v-ilimit.service /etc/systemd/syst
 sudo systemctl daemon-reload && sudo systemctl enable --now brain-5v-ilimit
 ```
 
-起動したときに、5V から取れる電流の上限を 480 mA に上げます（WinCE が 100 mA のまま残すことがあり、足りない分は電池から取られます）。そのあと常駐し、動いている最中や眠っている間にハブを挿したら、i.MX28 の 4P2（5V から作る電源）を立ち上げ直します。i.MX28 は 5V の抜き差しのたびにソフトで電源の経路を切り替える作りで、Linux にはその処理がないため、手当てしないと挿し直したあとも電池から取り続けます（[power.md](power.md)）。続けて、Wi-Fi の子機の初期化が失敗していれば `brain-wifi-reprobe` でやり直します。効いたかは `journalctl -u brain-5v-ilimit` に出ます（前後の 5V の読みで判定）。
+起動したときに、5V から取れる電流の上限を 480 mA に上げます（WinCE が 100 mA のまま残すことがあり、足りない分は電池から取られます）。そのあと常駐し、動いている最中や眠っている間にハブを挿したら、i.MX28 の 4P2（5V から作る電源）を立ち上げ直します。i.MX28 は 5V の抜き差しのたびにソフトで電源の経路を切り替える作りで、Linux にはその処理がないため、手当てしないと挿し直したあとも電池から取り続けます（[power-wince.md](power-wince.md)）。続けて、Wi-Fi の子機の初期化が失敗していれば `brain-wifi-reprobe` でやり直します。効いたかは `journalctl -u brain-5v-ilimit` に出ます（前後の 5V の読みで判定）。
 
 電池の電圧と、5V があるのに電池が減っていないかの確かめ（調べもの用。brain-watch（[stability.md](stability.md)）の記録に電池の電圧を足します）:
 
@@ -152,7 +152,7 @@ sudo install -m 755 userspace/power/battcheck.py /usr/local/bin/battcheck
 sudo battcheck        # 直近 10 分。分を渡せる（sudo battcheck 30）
 ```
 
-`battvolt` は電池の電圧を LRADC で読みます（GPIO3_2 を 2 ms だけ 1 にして電池を ADC につなぐ。brain-hackers の Scrapbox「PW-A9300」による）。`battcheck` は brain-watch の記録から、5V がある間に電池の電圧が下がり続けていないかを判定します。
+`battvolt` は電池の電圧を LRADC で読みます（[power-wince.md](power-wince.md)）。`battcheck` は brain-watch の記録から、5V がある間に電池の電圧が下がり続けていないかを判定します。
 
 蓋と 5V の知らせの記録（調べもの用。なくても動きます）:
 
