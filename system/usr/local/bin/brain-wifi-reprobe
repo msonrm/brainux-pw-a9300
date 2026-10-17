@@ -6,8 +6,9 @@
 # again, but the stick receives nothing until it loses power. The hub here
 # switches its ports' power together (ganged), so the power goes off only when
 # every port is disabled, and anything else on the hub goes off with it.
-# Started by /usr/lib/systemd/system-sleep/brain-wifi-reprobe; watches for
-# 60 s, at most 2 tries. Messages go to the journal.
+# Started by /usr/lib/systemd/system-sleep/brain-wifi-reprobe after waking, and
+# by brain-5v-ilimit after the hub (5V) is plugged in while running; watches
+# for 90 s, at most 3 tries. Messages go to the journal.
 DRV=rtl8xxxu66
 
 unbound() {
@@ -49,7 +50,9 @@ powercycle() {
 		[ "$(cat "$p/disable")" = 0 ] || continue
 		echo 1 > "$p/disable" && off="$off $p"
 	done
-	sleep 2
+	# 2 s off was often not enough: on 2026-10-17 the stick failed again
+	# (-11) after 2-3 s without power four times, and came up after 9 s
+	sleep 8
 	for p in $off; do
 		echo 0 > "$p/disable"
 	done
@@ -65,7 +68,7 @@ powercycle() {
 }
 
 seen=0 tries=0
-for t in $(seq 60); do
+for t in $(seq 90); do
 	sleep 1
 	devs=$(unbound)
 	if [ -z "$devs" ]; then
@@ -74,10 +77,10 @@ for t in $(seq 60); do
 	fi
 	seen=$((seen + 1))
 	[ $seen -lt 3 ] && continue   # give a probe in progress time to finish
-	[ $tries -ge 2 ] && { echo "still no driver after $tries tries: $devs"; exit 1; }
+	[ $tries -ge 3 ] && { echo "still no driver after $tries tries: $devs"; exit 1; }
 	tries=$((tries + 1)) seen=0
 	for d in $devs; do
-		echo "no driver on ${d##*/} ${t}s after waking, cutting its power (try $tries)"
+		echo "no driver on ${d##*/} ${t}s after waking or plug-in, cutting its power (try $tries)"
 		powercycle "$d"
 	done
 done

@@ -1,9 +1,10 @@
 [Unit]
-Description=Let the SoC take up to 480 mA from 5V
+Description=Keep the SoC powered from 5V (480 mA limit at boot, restart 4P2 when 5V is plugged in)
 
 [Service]
-Type=oneshot
 ExecStart=/usr/local/bin/brain-5v-ilimit
+Restart=on-failure
+Nice=5
 
 [Install]
 WantedBy=multi-user.target

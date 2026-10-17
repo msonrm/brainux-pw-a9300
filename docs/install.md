@@ -17,7 +17,7 @@ Brain で:
 sudo sh system/setup-stability.sh
 ```
 
-unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入ります。
+unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入り、使わないサービス（brain-config・triggerhappy・e2scrub・cron・avahi・シリアルの getty）を止め、journal を 50MB までにします（[stability.md](stability.md) の 4）。USB ケーブルでつなぐときのサービスは、OTG が peripheral の DTB のときだけ動くようになります。
 
 ## 2. カーネル（音声ドライバ・バックライト・蓋・サブ液晶・眠り方）
 
@@ -93,7 +93,33 @@ sudo install -D -m 755 system/usr/local/bin/brain-wifi-reprobe /usr/local/bin/br
 sudo install -D -m 755 system/usr/lib/systemd/system-sleep/brain-wifi-reprobe /usr/lib/systemd/system-sleep/brain-wifi-reprobe
 ```
 
-rtl8xxxu66 には眠る・起きるの処理がなく、起きるたびに子機の初期化をやり直します。それがときどきファームウェアの書き込みで失敗し（`probe of 1-1.3:1.0 failed with error -11`）、Wi-Fi が来なくなります。起きてから 60 秒の間に、ドライバのついていない子機を見つけたら、子機がつながっているハブのポートの電源を 2 秒切って戻します（子機を挿し直すのと同じ）。ハブはポートの電源をまとめて切るので、同じハブにつないだほかの機器も一緒に切れます。やったことは `journalctl -u brain-wifi-reprobe` に出ます。
+rtl8xxxu66 には眠る・起きるの処理がなく、起きるたびに子機の初期化をやり直します。それがときどきファームウェアの書き込みで失敗し（`probe of 1-1.3:1.0 failed with error -11`）、Wi-Fi が来なくなります。起きてから 90 秒の間に、ドライバのついていない子機を見つけたら、子機がつながっているハブのポートの電源を 8 秒切って戻します（子機を挿し直すのと同じ。3 回まで）。動いている最中にハブを挿したときは、下の brain-5v-ilimit が同じものを起こします。ハブはポートの電源をまとめて切るので、同じハブにつないだほかの機器も一緒に切れます。やったことは `journalctl -u brain-wifi-reprobe` に出ます。
+
+5V（ハブ・USB 給電）から電気を取る手当て（Chromebook でビルドして Brain に送る）:
+
+```sh
+arm-linux-gnueabi-gcc -O2 -march=armv5te -static -o brain-5v-ilimit userspace/power/brain-5v-ilimit.c
+# Brain で
+sudo install -D -m 755 brain-5v-ilimit /usr/local/bin/brain-5v-ilimit
+sudo install -D -m 644 userspace/power/brain-5v-ilimit.service /etc/systemd/system/brain-5v-ilimit.service
+sudo systemctl daemon-reload && sudo systemctl enable --now brain-5v-ilimit
+```
+
+起動したときに、5V から取れる電流の上限を 480 mA に上げます（WinCE が 100 mA のまま残すことがあり、足りない分は電池から取られます）。そのあと常駐し、動いている最中や眠っている間にハブを挿したら、i.MX28 の 4P2（5V から作る電源）を立ち上げ直します。i.MX28 は 5V の抜き差しのたびにソフトで電源の経路を切り替える作りで、Linux にはその処理がないため、手当てしないと挿し直したあとも電池から取り続けます（[power.md](power.md)）。続けて、Wi-Fi の子機の初期化が失敗していれば `brain-wifi-reprobe` でやり直します。効いたかは `journalctl -u brain-5v-ilimit` に出ます（前後の 5V の読みで判定）。
+
+電池の電圧と、5V があるのに電池が減っていないかの確かめ（調べもの用。brain-watch（[stability.md](stability.md)）の記録に電池の電圧を足します）:
+
+```sh
+arm-linux-gnueabi-gcc -O2 -march=armv5te -static -o battpins userspace/power/battpins.c
+arm-linux-gnueabi-gcc -O2 -march=armv5te -static -o battvolt userspace/power/battvolt.c
+# Brain で
+sudo install -m 755 battpins battvolt /usr/local/bin/
+sudo install -m 755 userspace/power/brain-power.sh /usr/local/bin/brain-power.sh
+sudo install -m 755 userspace/power/battcheck.py /usr/local/bin/battcheck
+sudo battcheck        # 直近 10 分。分を渡せる（sudo battcheck 30）
+```
+
+`battvolt` は電池の電圧を LRADC で読みます（GPIO3_2 を 2 ms だけ 1 にして電池を ADC につなぐ。brain-hackers の Scrapbox「PW-A9300」による）。`battcheck` は brain-watch の記録から、5V がある間に電池の電圧が下がり続けていないかを判定します。
 
 蓋と 5V の知らせの記録（調べもの用。なくても動きます）:
 
