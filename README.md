@@ -42,6 +42,8 @@
 
 **シャープのデータは入っていません。** YMU818 の設定手順（係数を含む）はシャープの WinCE ドライバの中にあるので、各自が自分の Brain から取り出して使います（[docs/audio-ymu818.md](docs/audio-ymu818.md)）。
 
+**WinCE の解析について。** 音と電源の一部は、シャープの WinCE のドライバを逆アセンブルし、エミュレーターで動かして調べた結果を使っています。音は `ymu818_wavdev.dll` を、電源は電池・電源のドライバと WinCE の本体を調べました。解析とコードを書くことは、同じ環境で coding agent（Claude Code）と進め、分けて行う手順（クリーンルーム）は踏んでいません。brain-hackers は 2026-10 に、DLL の逆アセンブルを根拠にしたコードにはクリーンルームの手順が要る、という方針を示しました。なので、ここのコードのうち該当するものは Brainux に提案しません。何を得てどこに使ったかは、[docs/audio-ymu818.md](docs/audio-ymu818.md) の「どうやって調べたか」と、[docs/power.md](docs/power.md) の「WinCE の解析との関係」に書いています。
+
 ## 文書
 
 - [docs/install.md](docs/install.md) … 入れ方（順番どおりに）

@@ -2,15 +2,16 @@ diff --git a/arch/arm/boot/dts/imx28-pwa7200.dts b/arch/arm/boot/dts/imx28-pwa72
 index 48bb8a1a6..3a0cccadf 100644
 --- a/arch/arm/boot/dts/imx28-pwa7200.dts
 +++ b/arch/arm/boot/dts/imx28-pwa7200.dts
-@@ -159,3 +159,44 @@ &buzzer_cold {
+@@ -159,3 +159,45 @@ &buzzer_cold {
  &buzzer {
  	status = "okay";
  };
 +
 +/*
 + * Audio: Yamaha YMU818 on I2C0 (0x3a), PCM from SAIF0 (I2S, 44.1kHz, MCLK 512fs).
-+ * Found by emulating the WinCE ymu818_wavdev.dll of PW-A9300. Other models in
-+ * this family may carry a different amplifier; only PW-A9300 has been checked.
++ * Found by disassembling the WinCE ymu818_wavdev.dll of PW-A9300 and running
++ * it in an emulator. Other models in this family may carry a different
++ * amplifier; only PW-A9300 has been checked.
 + */
 +&pinctrl {
 +	ymu818_pins: ymu818@0 {
