@@ -74,7 +74,28 @@ w /sys/module/zswap/parameters/enabled - - - - Y
 
 Wi-Fi が固まった件は、これで「メモリ不足ではない」と切り分けられました。
 
-## 4. その他の注意
+## 4. 使わないものを止める
+
+Brainux の起動は、カーネル 4 秒のあとユーザー空間に 1 分 32 秒かかっていました（2026-10-17、`systemd-analyze`）。CPU が 1 つで遅いので、同時に起動するものが多いほど全体が延びます。中身を読んで、何もしていないものを止めました（`setup-stability.sh` の 5）。
+
+| 止めたもの | 起動にかかっていた時間 | 理由 |
+|---|---|---|
+| `brain-config.service` | 17 秒 | CPU のガバナーを ondemand にするだけ。このカーネルには cpufreq がない（[power.md](power.md)）。そのうえ Shift を見るため `thd --dump` で入力デバイスを全部 1 秒開く |
+| `triggerhappy.service`・`.socket` | 6.7 秒、常駐 1.5MB | 割り当て（`/etc/triggerhappy/triggers.d/`）が空。入力デバイスを全部開いていた |
+| `e2scrub_reap.service`・`e2scrub_all.timer` | 20 秒 | LVM のスナップショットで ext4 を調べる仕組み。ルートは LVM ではない |
+| `cron.service` | 常駐 2MB | `/etc/cron.daily` などの中身は、どれも systemd があれば何もしない（タイマーが代わりに動く） |
+| `avahi-daemon.service`・`.socket` | 16 秒、常駐 3MB | `brain.local` の名前で見つけてもらう仕組み。IP でつないでいる |
+| `serial-getty@ttyAMA0.service` | 常駐 1.9MB | 基板のシリアル端子のログイン。カーネルの引数 `console=ttyAMA0` から generator が作るので、disable では止まらず mask した |
+
+USB ケーブルでつなぐための `ethernet_gadget.service`（15 秒）と `networking.service`（20 秒、ifupdown が上げるのは usb0 だけ）は、OTG が host の DTB（Wi-Fi で使うとき）では毎回失敗していました。消すと USB ケーブルの逃げ道がなくなるので、ガジェットの口（`/sys/class/udc/ci_hdrc.0`）があるときだけ動くようにしました（`system/etc/systemd/system/*.service.d/brain-only-peripheral.conf`）。
+
+journal は上限がなく、SD に 203MB たまっていました。`system/etc/systemd/journald.conf.d/brain-size.conf` で 50MB までにしました。
+
+止めたあと再起動すると、ユーザー空間は 1 分 32 秒 → 1 分 16 秒（全体で 1 分 37 秒 → 1 分 20 秒）になった。USB ケーブル用の 2 つは条件が合わず飛ばされ、Wi-Fi はつながり、失敗したユニットはなかった（2026-10-17）。いま長いのは、最初の 40 秒あまりで SD のパーティションのデバイスが揃うまで（`systemd-udev-trigger` 19 秒）で、ここは止めるものではなく、遅い CPU で udev が全部のデバイスを処理する時間。
+
+残したもの: NetworkManager・wpa_supplicant（Wi-Fi）、timesyncd・fake-hwclock（RTC がないので時刻を保つ）、tty1 の getty（X が壊れたときに文字の画面でログインする逃げ道。ly は tty2）、logrotate・fstrim・dpkg-db-backup のタイマー（1 日か 1 週に 1 回）、brain-watch（固まったときの手がかり）。
+
+## 5. その他の注意
 
 - 固まって電源を切ると、直前に書いたファイルが **0 バイト**になっていることがある（ext4 のデータがまだ書き出されていなかった）。大事なファイルを書いたら `sync`
 - Chromebook（Crostini）から SD カードの ext4 に `cp` で書いたファイルが 0 バイトになったことがあった。書いたら fsync し、読み返して確かめる。SD はファイルアプリで「取り出し」てから抜く
