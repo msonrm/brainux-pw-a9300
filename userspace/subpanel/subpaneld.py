@@ -104,6 +104,7 @@ LONG_TIME = 0.6
 
 EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_SW = 0, 1, 2, 3, 5
 SW_LID = 0
+SW_DOCK = 5                          # 5V from the hub, from the keyboard controller
 ABS_X, ABS_Y, BTN_TOUCH = 0, 1, 0x14a
 REL_X, REL_Y = 0, 1
 BTN_LEFT, BTN_RIGHT, KEY_ESC = 0x110, 0x111, 1
@@ -996,6 +997,10 @@ def main():
                         power.key(val == 1, now)
                     elif typ == EV_SW and code == SW_LID:
                         apps.lid_switch(val == 1)
+                    elif typ == EV_SW and code == SW_DOCK:
+                        # show the plug at once; the next poll reads VBUSVALID again
+                        status.usb = val == 1
+                        status.update(now, force=True)
             power.tick(now)
             if jack in r:
                 os.read(jack, 16 * 64)
