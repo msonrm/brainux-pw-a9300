@@ -44,6 +44,15 @@
 
 **WinCE の解析について。** 音と電源の一部は、シャープの WinCE のドライバを逆アセンブルし、エミュレーターで動かして調べた結果を使っています。音は `ymu818_wavdev.dll` を、電源は電池・電源のドライバと WinCE の本体を調べました。解析とコードを書くことは、同じ環境で coding agent（Claude Code）と進め、分けて行う手順（クリーンルーム）は踏んでいません。brain-hackers は 2026-10 に、DLL の逆アセンブルを根拠にしたコードにはクリーンルームの手順が要る、という方針を示しました。なので、ここのコードのうち該当するものは Brainux に提案しません。何を得てどこに使ったかは、[docs/audio-ymu818.md](docs/audio-ymu818.md) の「どうやって調べたか」と、[docs/power.md](docs/power.md) の「WinCE の解析との関係」に書いています。
 
+> [!WARNING]
+> **Brainux や linux-brain に、音（YMU818）や電源まわりのコードを書こうとしている方は、次のファイルを読まないでください。**
+> 逆アセンブルの結果を含むか、逆アセンブルをした環境で書いたものです。読んでから書いたコードは、クリーンに書いたと説明できなくなります。
+>
+> - 音: [`kernel/0001`](kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch)、[`kernel/0012`](kernel/0012-ASoC-ymu818-turn-the-amp-off-for-suspend.patch)、[`tools/ymu818-fw/`](tools/ymu818-fw/)、`userspace/saif.c`・`ymu818.py`・`run-test.sh`、[docs/audio-ymu818.md](docs/audio-ymu818.md)
+> - 電源: [`kernel/0009`](kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch)、`userspace/power/` の `battpins.c`・`battvolt.c`・`brain-5v-ilimit.c`・`ramp4p2.c`・`brain-power.sh`、`userspace/subpanel/subpaneld.py` の電池の段階の部分、[docs/power.md](docs/power.md) の「WinCE の解析との関係」の表にある項目
+>
+> これ以外のファイル（ほかのカーネルのパッチ、Wi-Fi、`system/`、`mucom88/`、subpaneld のほかの部分など）には、WinCE の解析を使っていません。
+
 ## 文書
 
 - [docs/install.md](docs/install.md) … 入れ方（順番どおりに）
