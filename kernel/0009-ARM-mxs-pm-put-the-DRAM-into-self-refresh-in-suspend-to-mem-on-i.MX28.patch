@@ -159,16 +159,20 @@ index 610eabbc7..eb3339952 100644
  }
 diff --git a/arch/arm/mach-mxs/suspend-mx28.S b/arch/arm/mach-mxs/suspend-mx28.S
 new file mode 100644
-index 000000000..dd4638473
+index 000000000..33c4728ff
 --- /dev/null
 +++ b/arch/arm/mach-mxs/suspend-mx28.S
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,114 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/*
 + * i.MX28 suspend-to-mem, copied to and run from the on-chip RAM, with the
 + * MMU on (the registers are reached through their ioremap() addresses).
-+ * After mx28_cpu_standby in the Freescale 2.6.35 BSP (arch/arm/mach-mx28/
-+ * sleep.S, Copyright (C) 2010 Freescale Semiconductor, Inc.).
++ * Based on mx28_cpu_standby in the Freescale 2.6.35 BSP
++ * (arch/arm/mach-mx28/sleep.S) and its port to mach-mxs by Digi
++ * (arch/arm/mach-mxs/mx28-sleep.S in digidotcom/yocto-linux):
++ *
++ * Copyright (C) 2010-2013 Freescale Semiconductor, Inc.
++ * Copyright 2008 Embedded Alley Solutions, Inc All Rights Reserved.
 + *
 + * Nothing here may touch the DRAM between entering and leaving the
 + * self-refresh: no stack, no literal pool, only registers.

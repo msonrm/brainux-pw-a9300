@@ -128,7 +128,7 @@ Brain では `/usr/local/bin/subpaneld`、`subpaneld.service`（`-v` で詳し�
 
 ### 蓋を閉じたまま鳴らすアプリ（2026-10-16）
 
-pmd-hle の再生器（`pmd-app`）は、イヤホンで鳴らしている間は蓋を閉じても鳴らし続ける（本人と決めた）。そのために logind の handle-lid-switch の inhibitor が要るが、Brainux には polkit がなく、ふつうのユーザーには取らせてもらえない（`Access denied`）。polkitd を入れる案もあったが、常駐が一つ増えるのと、バックライトと電池の見張りも root が要るので、root で動く subpaneld が代わりに引き受けることにした（本人が選んだ）。
+自作の再生アプリ（SDL2）は、イヤホンで鳴らしている間は蓋を閉じても鳴らし続ける（本人と決めた）。そのために logind の handle-lid-switch の inhibitor が要るが、Brainux には polkit がなく、ふつうのユーザーには取らせてもらえない（`Access denied`）。polkitd を入れる案もあったが、常駐が一つ増えるのと、バックライトと電池の見張りも root が要るので、root で動く subpaneld が代わりに引き受けることにした（本人が選んだ）。
 
 - `/run/subpaneld.sock`（Unix ソケット、mode 0666）。アプリは 1 行ずつ `keep-awake 1` / `keep-awake 0` を送る。つないでいるアプリのどれかが 1 なら、subpaneld が `systemd-inhibit --what=handle-lid-switch --mode=block … cat` を走らせて inhibitor を持つ。どれも 0 になるか、アプリが落ちて接続が切れたら、`cat` の stdin を閉じて外す。蓋が閉じていれば logind がそこで眠る
 - 頼まれている間に蓋が閉じたら（キーボードの SW_LID。起動のときは EVIOCGSW で読む）、メイン液晶とサブ液晶のバックライトを `bl_power` = 4 で消し、開けたら 0 に戻す

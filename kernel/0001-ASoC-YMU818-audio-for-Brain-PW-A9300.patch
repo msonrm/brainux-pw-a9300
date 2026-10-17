@@ -799,14 +799,16 @@ index ab0a9a553..be3584d62 100644
 +obj-$(CONFIG_SND_SOC_MXS_YMU818) += snd-soc-mxs-ymu818.o
 diff --git a/sound/soc/mxs/mxs-ymu818.c b/sound/soc/mxs/mxs-ymu818.c
 new file mode 100644
-index 000000000..ba21bb4f3
+index 000000000..7b1788fa8
 --- /dev/null
 +++ b/sound/soc/mxs/mxs-ymu818.c
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * ASoC machine driver for MXS boards with a Yamaha YMU818 on SAIF0
-+ * (SHARP Brain PW-A9300). Based on mxs-sgtl5000.c.
++ * (SHARP Brain PW-A9300). Based on mxs-sgtl5000.c:
++ *
++ * Copyright 2011 Freescale Semiconductor, Inc.
 + */
 +
 +#include <linux/module.h>

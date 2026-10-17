@@ -1,0 +1,23 @@
+# 手元のメモ（Claude Code 向け）
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+
+# docs/install.md の手順でリポジトリの直下にできるもの
+/brain-5v-ilimit
+/battpins
+/battvolt
+/venv/
+
+# シャープのデータ。自分の Brain から取り出したものは公開しない（docs/audio-ymu818.md）
+nk_part.bin
+ymu818-brain.bin
+ymu818-brain.txt
+ymu818_speaker_sequence.txt
+
+# userspace/wifi-stress.sh が書き出すもの
+/userspace/wifi-stress.txt
+/userspace/wifi-ping2.txt
+/userspace/rand5m.bin

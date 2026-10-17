@@ -30,8 +30,8 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   they would be stale. Any suspend (lid too) draws the moon through
   brain-subpanel-sleep (SIGUSR1 before, SIGUSR2 after waking, which brings
   the normal picture back).
-- Apps (APP_SOCK): an app that plays with the lid closed (pmd-app, through
-  headphones) asks over a Unix socket, line by line: "keep-awake 1" / "0".
+- Apps (APP_SOCK): an app that plays with the lid closed (a music player,
+  through headphones) asks over a Unix socket, line by line: "keep-awake 1" / "0".
   While any connected app asks, this holds logind's handle-lid-switch block
   inhibitor (an ordinary user is refused one: Brainux has no polkit), and the
   lid closing turns both backlights off until it opens. When the app lets go

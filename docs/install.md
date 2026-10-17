@@ -19,6 +19,17 @@ sudo sh system/setup-stability.sh
 
 unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入り、使わないサービス（brain-config・triggerhappy・e2scrub・cron・avahi・シリアルの getty）を止め、journal を 50MB までにします（[stability.md](stability.md) の 4）。USB ケーブルでつなぐときのサービスは、OTG が peripheral の DTB のときだけ動くようになります。
 
+固まったときの手がかりを残す（調べもの用。なくても動きます）:
+
+```sh
+sudo install -D -m 644 system/etc/systemd/journald.conf.d/sync.conf /etc/systemd/journald.conf.d/sync.conf
+sudo install -m 755 userspace/brain-watch.sh /usr/local/bin/brain-watch.sh
+sudo install -D -m 644 userspace/brain-watch.service /etc/systemd/system/brain-watch.service
+sudo systemctl daemon-reload && sudo systemctl restart systemd-journald && sudo systemctl enable --now brain-watch
+```
+
+journald を 10 秒ごとに書き出させ、10 秒ごとに空きメモリ・負荷・Wi-Fi の電波などを `/var/log/brain-watch.log` に 1 行残します（[stability.md](stability.md) の 3）。電源の様子も残すには、手順 2 の `brain-power.sh` を入れます。
+
 ## 2. カーネル（音声ドライバ・バックライト・蓋・サブ液晶・眠り方）
 
 PC で:
@@ -71,6 +82,28 @@ sudo alsactl store
 ```
 
 戻すときは `zImage.orig` と `imx28-pwa7200.dtb.orig` を元の名前に戻します。
+
+サブ液晶・タッチ・ボタン（0004〜0007 を当てたとき）。サブ液晶をタッチパッドと状態の帯にし、メイン液晶の枠のボタンと「入/切」の表示を受け持つ常駐プログラム `subpaneld` を入れます（[subpanel.md](subpanel.md)）。Brainux のカーネルは uinput が無効なので、先に PC で、上と同じビルドから外付けモジュールにします:
+
+```sh
+sh kernel/uinput/build.sh ../linux-brain ../build     # kernel/uinput/src/uinput.ko ができる
+```
+
+Brain で:
+
+```sh
+sudo install -D -m 644 kernel/uinput/src/uinput.ko /usr/lib/modules/$(uname -r)/extra/uinput.ko
+sudo depmod -a
+sudo install -D -m 644 system/etc/modules-load.d/uinput.conf /etc/modules-load.d/uinput.conf
+sudo install -D -m 644 system/etc/udev/rules.d/72-brain-subpanel-seat.rules /etc/udev/rules.d/72-brain-subpanel-seat.rules
+sudo install -D -m 644 system/etc/X11/xorg.conf.d/20-subpanel.conf /etc/X11/xorg.conf.d/20-subpanel.conf
+sudo install -D -m 755 userspace/subpanel/subpaneld.py /usr/local/bin/subpaneld
+sudo install -D -m 644 userspace/subpanel/subpaneld.service /etc/systemd/system/subpaneld.service
+sudo systemctl daemon-reload && sudo systemctl enable subpaneld
+cp ~/.jwmrc ~/.jwmrc.orig 2>/dev/null; cp system/home/user/.jwmrc ~/.jwmrc
+```
+
+udev のルールと X の設定は、X がサブ液晶を開かないようにするもので、X が起動する前に要るので、入れたら再起動します。起動すると、サブ液晶にタッチパッドと右端の状態の帯（音量・明るさ・電池・USB 給電）が出ます。`.jwmrc` は、メイン液晶の枠の Home ボタン（F14）で JWM のメニューを開く設定です（Brainux の設定を読み込んだうえで足す形）。しおり（F13）と辞書メニュー（F15）、枠の右の 7 つのボタンは空けてあります。
 
 サスペンド（0002・0003 を当てたとき）:
 

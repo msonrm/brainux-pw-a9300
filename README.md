@@ -1,6 +1,6 @@
 # brainux-pw-a9300
 
-シャープの電子辞書 Brain **PW-A9300** で動く [Brainux](https://github.com/brain-hackers/buildbrain)（Debian 13 + Linux 6.1）を、ふだん使える機械にするための材料です。目標は Brainux そのものの改善（できたものは brain-hackers に還元したい）で、その上に「MML を書いてすぐ鳴らす機械」のような専用機を載せます。音楽のエンジンは、PC-98 の音楽ドライバ PMD を本物の 8086 のコードのまま動かす pmd-hle（別のリポジトリ）です。
+シャープの電子辞書 Brain **PW-A9300** で動く [Brainux](https://github.com/brain-hackers/buildbrain)（Debian 13 + Linux 6.1）を、ふだん使える機械にするための材料です。目標は Brainux そのものの改善（できたものは brain-hackers に還元したい）で、その上に「MML を書いてすぐ鳴らす機械」のような専用機を載せます。
 
 いま入っているもの:
 
@@ -14,7 +14,7 @@
 
 > **これはテストです。** 個人が自分の 1 台（PW-A9300）で試した自前ビルドで、brain-hackers の公式な成果物ではありません。ほかの機種では確かめていません。カーネルや DTB の差し替えは自己責任で、元のファイルを必ず残してください。
 
-## 今の状態（2026-10-16）
+## 今の状態（2026-10-17）
 
 | 項目 | 状態 |
 |---|---|
@@ -24,7 +24,6 @@
 | 電池・USB 給電 | 電池の残量は 4 段階、電圧は LRADC で読める（換算の比は未決）。USB の 5V から取る電流の上限を 480 mA に上げ、動いている最中や眠っている間にハブを挿したら i.MX28 の 4P2 を立ち上げ直す（しないと電池から取り続ける）。CPU クロック・持ち時間は未測定（[docs/power.md](docs/power.md)） |
 | サブ液晶（キーボードの下、240×120）・タッチ・ボタン | `subpaneld` が、タッチパッド（なぞる・タップ・長押し）、右端に印刷されたボタン（音量・明るさ・クリア）、状態の帯（音量・明るさ・電池・USB 給電）、メイン液晶の枠の 11 個のボタン、「入/切」の長押しの表示を受け持つ。鳴らしているアプリに頼まれたら、蓋を閉じても眠らない（[docs/subpanel.md](docs/subpanel.md)） |
 | MUCOM88 | サンプル曲 3 曲を、作りながら途切れなく再生できる。CPU 使用率は約 50% |
-| PMD（pmd-hle） | フォルダの曲を一覧から聴ける。イヤホンなら蓋を閉じたまま聴ける。CPU 使用率は約 16% |
 
 ## 中身
 
@@ -37,7 +36,7 @@
 | [`userspace/`](userspace/) | `subpaneld`、電源の道具（5V の電流の上限と 4P2 の立ち上げ直し、電池の見張りと電圧、眠りの記録）、ドライバなしの試し鳴らし、再生・診断・負荷試験のスクリプト | MIT |
 | [`system/`](system/) | Brainux の設定（安定化、蓋と電源キー、眠り方、サブ液晶の X の設定、Wi-Fi のつなぎ直し、音のスレッドの優先度） | MIT |
 | [`mucom88/`](mucom88/) | OPEN MUCOM88 へのパッチ、クロスビルド、再生スクリプト、リズム音源 | パッチは CC BY-NC-SA 4.0（上流に従う）。リズム音源は作者の配布条件に従う |
-| [`docs/`](docs/) | 調べたことの記録と手順 | MIT |
+| [`docs/`](docs/) | 調べたことの記録と手順 | CC BY 4.0 |
 
 詳しくは [LICENSE.md](LICENSE.md)。
 
@@ -52,12 +51,11 @@
 - [docs/power.md](docs/power.md) … CPU クロック、電源、電池、サスペンド
 - [docs/subpanel.md](docs/subpanel.md) … サブ液晶・タッチ・ボタンと `subpaneld`
 - [docs/mucom88.md](docs/mucom88.md) … MUCOM88 のビルドと速さ
-- [docs/upstream-notes.md](docs/upstream-notes.md) … brain-hackers と OPEN MUCOM88 に伝えたいこと（下書き）
-- [docs/blog-draft.md](docs/blog-draft.md) … 記事の下書き
 
 ## 謝辞
 
 - [brain-hackers](https://github.com/brain-hackers) の Brainux、linux-brain、buildbrain
+- brain-hackers の [Scrapbox](https://scrapbox.io/brain-hackers/) の記録。電池の電圧の読み方は「PW-A9300」のページによります（[docs/power.md](docs/power.md)）。YMU818 には「YMU818b メモ」という先行の記録があります（こちらの解析はそれに頼っていません。[docs/audio-ymu818.md](docs/audio-ymu818.md)）
 - OPEN MUCOM88（古代祐三さん、おにたま（ONION software）さん、ほか）、fmgen（cisc さん）
 - YM2608 風リズム音源音色データ 2608modoki2（メモルさん）
 - Linux の rtl8xxxu（Jes Sorensen さん、ほか）

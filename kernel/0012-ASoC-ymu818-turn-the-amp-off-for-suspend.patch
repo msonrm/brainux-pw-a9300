@@ -16,7 +16,7 @@ has it open (SDL keeps writing silence while paused).
   it the stream only came back through the underrun that happened to
   follow the wake-up, which would not have turned the path on again.
 
-Seen on Brain PW-A9300 with pmd-app paused by the lid: the noise
+Seen on Brain PW-A9300 with an SDL2 music player paused by the lid: the noise
 started when the system went to sleep, about 5 s after closing the lid.
 
 diff --git a/sound/soc/codecs/ymu818.c b/sound/soc/codecs/ymu818.c
@@ -59,7 +59,7 @@ diff --git a/sound/soc/codecs/ymu818.c b/sound/soc/codecs/ymu818.c
 diff --git a/sound/soc/mxs/mxs-ymu818.c b/sound/soc/mxs/mxs-ymu818.c
 --- a/sound/soc/mxs/mxs-ymu818.c
 +++ b/sound/soc/mxs/mxs-ymu818.c
-@@ -117,6 +117,8 @@
+@@ -119,6 +119,8 @@
  	.driver = {
  		.name = "mxs-ymu818",
  		.of_match_table = mxs_ymu818_dt_ids,
