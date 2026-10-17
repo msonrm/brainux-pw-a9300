@@ -172,7 +172,7 @@ mpg123 music.mp3              # Brainux には入っていないので apt で�
 sh userspace/play.sh music.wav   # SSH が切れても止まらない（nohup）。途切れは ~/play.log
 ```
 
-音を鳴らすアプリが、自分の音のスレッドの優先度を上げられるようにします（subpaneld がサブ液晶を描く間に音が崩れないように。[audio-ymu818.md](audio-ymu818.md)）。次のログインから効きます。
+音を鳴らすアプリが、自分の音のスレッドの優先度を上げられるようにします（subpaneld がサブ液晶を描く間に音が崩れないように。[stability.md](stability.md)）。次のログインから効きます。
 
 ```sh
 sudo install -D -m 644 system/etc/security/limits.d/90-brain-audio.conf /etc/security/limits.d/90-brain-audio.conf

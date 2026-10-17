@@ -56,9 +56,9 @@
 ## 文書
 
 - [docs/install.md](docs/install.md) … 入れ方（順番どおりに）
-- [docs/audio-ymu818.md](docs/audio-ymu818.md) … 音声 IC の調べ方とドライバ
+- [docs/audio-ymu818.md](docs/audio-ymu818.md) … 音声 IC の調べ方とドライバ。WinCE の解析とつながるので、Brainux にコードを書く方は読まないでください
 - [docs/wifi-rtl8188eu.md](docs/wifi-rtl8188eu.md) … Wi-Fi が固まった原因と rtl8xxxu66
-- [docs/stability.md](docs/stability.md) … メモリ不足と unaligned access
+- [docs/stability.md](docs/stability.md) … メモリ不足と unaligned access、使わないサービス、鳴らしている音が崩れるとき（優先度）
 - [docs/power.md](docs/power.md) … CPU クロック、電源、サスペンド
 - [docs/power-wince.md](docs/power-wince.md) … 電源のうち WinCE の解析とつながる部分（5V から取る電流と 4P2、電池の見張りピンと電圧、deep を作る `kernel/0009`）。Brainux にコードを書く方は読まないでください
 - [docs/subpanel.md](docs/subpanel.md) … サブ液晶・タッチ・ボタンと `subpaneld`
