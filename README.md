@@ -16,7 +16,9 @@
 
 > [!WARNING]
 > **Brainux や linux-brain に、音（YMU818）や電源まわりのコードを書こうとしている方は、次のファイルを読まないでください。**
-> 逆アセンブルの結果を含むか、逆アセンブルをした環境で書いたものです。読んでから書いたコードは、クリーンに書いたと説明できなくなります。
+> 逆アセンブルで知ったこと（レジスタの番地や書き込む値、手順の順番など）を使っているか、逆アセンブルをした環境で書いたものです。読んでから書いたコードは、クリーンに書いたと説明できなくなります。
+>
+> この注意は、Brainux の方針（DLL の逆アセンブルを根拠にしたコードにはクリーンルームの手順が要る）に合わせるためのものです。ここにはシャープのプログラムもデータも入っていません。逆アセンブルしたコードを写したり、別の言語に書き移したりしたものもありません。コードは、調べてわかった仕組みと、Freescale などの GPL のコードを手本に、一から書いています（YMU818 の設定手順は、各自が自分の Brain から取り出します）。
 >
 > - 音: [`kernel/0001`](kernel/0001-ASoC-YMU818-audio-for-Brain-PW-A9300.patch)、[`kernel/0012`](kernel/0012-ASoC-ymu818-turn-the-amp-off-for-suspend.patch)、[`tools/ymu818-fw/`](tools/ymu818-fw/)、`userspace/saif.c`・`ymu818.py`・`run-test.sh`、[docs/audio-ymu818.md](docs/audio-ymu818.md)
 > - 電源: [`kernel/0009`](kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refresh-in-suspend-to-mem-on-i.MX28.patch)、`userspace/power/` の `battpins.c`・`battvolt.c`・`battcheck.py`・`brain-5v-ilimit.c`・`ramp4p2.c`・`brain-mcu-off`・`brain-power.sh`・`vbuswatch.py`、`userspace/subpanel/subpaneld.py` の電池の段階の部分、[docs/power-wince.md](docs/power-wince.md)
