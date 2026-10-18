@@ -140,6 +140,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now brain-5v-ilimit
 
 起動したときに、5V から取れる電流の上限を 480 mA に上げます（WinCE が 100 mA のまま残すことがあり、足りない分は電池から取られます）。そのあと常駐し、動いている最中や眠っている間にハブを挿したら、i.MX28 の 4P2（5V から作る電源）を立ち上げ直します。i.MX28 は 5V の抜き差しのたびにソフトで電源の経路を切り替える作りで、Linux にはその処理がないため、手当てしないと挿し直したあとも電池から取り続けます（[power-wince.md](power-wince.md)）。続けて、Wi-Fi の子機の初期化が失敗していれば `brain-wifi-reprobe` でやり直します。効いたかは `journalctl -u brain-5v-ilimit` に出ます（前後の 5V の読みで判定）。
 
+電源を切ったあと「入/切」で起動できるようにする:
+
+```sh
+sudo install -D -m 755 userspace/power/brain-mcu-off /usr/lib/systemd/system-shutdown/brain-mcu-off
+```
+
+Linux の `poweroff`（入/切の長押し）で切ると、そのままでは「入/切」で起動せず、電池を抜き差しするまで起動しません。これを入れると、電源を切る直前にキーボードのマイコンに知らせ、「入/切」で起動するようになります（[power-wince.md](power-wince.md)）。再起動のときと、ハブ（5V）をつないでいるときは何もしません（つないだまま知らせると、WinCE から起動し直したあとキーボードと SD が使えなくなりました）。
+
 電池の電圧と、5V があるのに電池が減っていないかの確かめ（調べもの用。brain-watch（[stability.md](stability.md)）の記録に電池の電圧を足します）:
 
 ```sh

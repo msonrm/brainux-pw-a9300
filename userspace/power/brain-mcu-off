@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+# 電源を切ったあと「入/切」で起動できるように、キーボードのマイコンに知らせる。
+# systemd-shutdown が最後に呼ぶ（/usr/lib/systemd/system-shutdown/、引数は poweroff / reboot / halt / kexec）。
+# このときファイルシステムは同期済みで読み取り専用になっている。
+#
+# poweroff のときだけ、マイコン（I2C0 の 0x28）のレジスタ 0x82 に 0x00 を書き、10 ms 待って 0x10 を書く
+# （WinCE が電源を切る前に送るのと同じ。docs/power-wince.md「電源を切ったあと入/切で起動する」）。
+# 送っても電源は切れず、このあと Linux の poweroff（HW_POWER_RESET の PWD）で切れる。
+# 送らずに切ると、入/切では起動せず、電池を抜き差しするまで起動しない。
+# 5V（ハブ）があるときは送らない。送ると、切れずに WinCE から起動し直し、キーボードが効かず、
+# SD も見えなくなった（ハブと電池を外すまで戻らない。2026-10-18 に 2 回）。
+# 5V の有無は brain-power.sh と同じく VDD5V（LRADC ch15）で見る。読めなければ送る。
+# brain-kbd-i2c が 0x28 を使っているので I2C_SLAVE_FORCE で開く。
+import fcntl, os, sys, time
+
+if len(sys.argv) < 2 or sys.argv[1] != "poweroff":
+    sys.exit(0)
+
+def kmsg(s):
+    try:
+        with open("/dev/kmsg", "w") as k:
+            k.write("brain-mcu-off: %s\n" % s)
+    except OSError:
+        pass
+
+def vdd5v_mv():
+    iio = "/sys/bus/iio/devices/iio:device0/"
+    try:
+        raw = float(open(iio + "in_voltage15_raw").read())
+        scale = float(open(iio + "in_voltage15_scale").read())
+        return raw * scale
+    except (OSError, ValueError):
+        return None
+
+v5 = vdd5v_mv()
+if v5 is not None and v5 > 4000:
+    kmsg("5V present (%d mV), not telling the MCU" % v5)
+    sys.exit(0)
+
+I2C_SLAVE_FORCE = 0x0706
+try:
+    fd = os.open("/dev/i2c-0", os.O_RDWR)
+    fcntl.ioctl(fd, I2C_SLAVE_FORCE, 0x28)
+    os.write(fd, bytes([0x82, 0x00]))
+    time.sleep(0.01)
+    os.write(fd, bytes([0x82, 0x10]))
+    kmsg("told the MCU to wake on the power key")
+except OSError as e:
+    kmsg("error %s" % e)
