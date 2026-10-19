@@ -101,13 +101,15 @@ sudo depmod -a
 sudo install -D -m 644 system/etc/modules-load.d/uinput.conf /etc/modules-load.d/uinput.conf
 sudo install -D -m 644 system/etc/udev/rules.d/72-brain-subpanel-seat.rules /etc/udev/rules.d/72-brain-subpanel-seat.rules
 sudo install -D -m 644 system/etc/X11/xorg.conf.d/20-subpanel.conf /etc/X11/xorg.conf.d/20-subpanel.conf
+sudo cp /etc/X11/xorg.conf /etc/X11/xorg.conf.fbdev     # 0016 が入っていないカーネルでは、こちらに戻す
+sudo install -D -m 644 system/etc/X11/xorg.conf /etc/X11/xorg.conf
 sudo install -D -m 755 userspace/subpanel/subpaneld.py /usr/local/bin/subpaneld
 sudo install -D -m 644 userspace/subpanel/subpaneld.service /etc/systemd/system/subpaneld.service
 sudo systemctl daemon-reload && sudo systemctl enable subpaneld
 cp ~/.jwmrc ~/.jwmrc.orig 2>/dev/null; cp system/home/user/.jwmrc ~/.jwmrc
 ```
 
-udev のルールと X の設定は、X がサブ液晶を開かないようにするもので、X が起動する前に要るので、入れたら再起動します。起動すると、サブ液晶にタッチパッドと右端の状態の帯（音量・明るさ・電池・USB 給電）が出ます。`.jwmrc` は、メイン液晶の枠の Home ボタン（F14）で JWM のメニューを開く設定と、窓の移動・リサイズを枠だけで描く設定です（Brainux の設定を読み込んだうえで足す形）。しおり（F13）と辞書メニュー（F15）、枠の右の 7 つのボタンは空けてあります。
+udev のルールと X の設定は、X がサブ液晶を開かないようにするもので、X が起動する前に要るので、入れたら再起動します。`xorg.conf` は、メイン液晶を Brainux の `fbdev` ドライバではなく `modesetting` ドライバで描くもので、画面の書き換えが 1 秒 20 回までという上限がなくなり、カーソルが滑らかに動きます。kernel/0016 が要ります（ないと X が文字の画面のまま止まります）。起動すると、サブ液晶にタッチパッドと右端の状態の帯（音量・明るさ・電池・USB 給電）が出ます。`.jwmrc` は、メイン液晶の枠の Home ボタン（F14）で JWM のメニューを開く設定と、窓の移動・リサイズを枠だけで描く設定です（Brainux の設定を読み込んだうえで足す形）。しおり（F13）と辞書メニュー（F15）、枠の右の 7 つのボタンは空けてあります。
 
 サスペンド（0002・0003 を当てたとき）:
 
