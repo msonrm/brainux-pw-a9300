@@ -1,0 +1,183 @@
+From: brainux-pw-a9300
+Subject: [PATCH] dmaengine: mxs-dma: wait for a terminated cyclic channel to stop
+
+A cyclic channel is not reset when it is terminated: to avoid channel
+stalls, mxs_dma_reset_chan() only stops adding to its semaphore, and the
+channel runs on for up to two periods until the semaphore is used up.
+A cyclic transfer started meanwhile writes the first command to
+NXTCMDAR and adds 2 to the semaphore under the still running channel:
+it finishes the old period, then jumps to the start of the buffer. The
+position read from BAR goes back, ALSA takes that for a wrap of the
+whole buffer, and the stream gets an XRUN. Recovering from it is
+another quick restart, so it repeats every period.
+
+- Add device_synchronize(): wait until the semaphore of a terminated
+  cyclic channel is used up. If BAR has not moved for 10 ms (the
+  peripheral no longer asks for data), reset the channel instead. Then
+  kill the tasklet, as the callback contract asks. With the sync_stop()
+  hook of the previous patch (0014), snd_pcm_prepare() now waits.
+- A paused (frozen) channel never uses its semaphore up. Terminating it,
+  or preparing a new cyclic transfer on it (a PCM suspended with
+  dmaengine_pause() and then prepared again instead of resumed),
+  unfreezes and resets it. Before, the new transfer stayed frozen and
+  nothing played.
+- Move the channel reset itself into mxs_dma_reset_chan_hw().
+
+Seen on Brain PW-A9300 (SAIF0 playback, period 1024 frames, buffer
+16384): drop, prepare and start at once gave 129 XRUNs in 3 s (one per
+period) from the second start on; waiting 200 ms after the drop gave
+none.
+
+diff --git a/drivers/dma/mxs-dma.c b/drivers/dma/mxs-dma.c
+--- a/drivers/dma/mxs-dma.c
++++ b/drivers/dma/mxs-dma.c
+@@ -62,6 +62,7 @@
+ #define HW_APBHX_CHn_BAR(d, n) \
+ 	(((dma_is_apbh(d) && apbh_is_old(d)) ? 0x070 : 0x130) + (n) * 0x70)
+ #define HW_APBX_CHn_DEBUG1(d, n) (0x150 + (n) * 0x70)
++#define BM_APBHX_CHn_SEMA_PHORE			(0xff << 16)
+ 
+ /*
+  * ccw bits definitions
+@@ -186,23 +187,12 @@
+ 	return container_of(chan, struct mxs_dma_chan, chan);
+ }
+ 
+-static void mxs_dma_reset_chan(struct dma_chan *chan)
++static void mxs_dma_reset_chan_hw(struct mxs_dma_chan *mxs_chan)
+ {
+-	struct mxs_dma_chan *mxs_chan = to_mxs_dma_chan(chan);
+ 	struct mxs_dma_engine *mxs_dma = mxs_chan->mxs_dma;
+ 	int chan_id = mxs_chan->chan.chan_id;
+ 
+-	/*
+-	 * mxs dma channel resets can cause a channel stall. To recover from a
+-	 * channel stall, we have to reset the whole DMA engine. To avoid this,
+-	 * we use cyclic DMA with semaphores, that are enhanced in
+-	 * mxs_dma_int_handler. To reset the channel, we can simply stop writing
+-	 * into the semaphore counter.
+-	 */
+-	if (mxs_chan->flags & MXS_DMA_USE_SEMAPHORE &&
+-			mxs_chan->flags & MXS_DMA_SG_LOOP) {
+-		mxs_chan->reset = true;
+-	} else if (dma_is_apbh(mxs_dma) && apbh_is_old(mxs_dma)) {
++	if (dma_is_apbh(mxs_dma) && apbh_is_old(mxs_dma)) {
+ 		writel(1 << (chan_id + BP_APBH_CTRL0_RESET_CHANNEL),
+ 			mxs_dma->base + HW_APBHX_CTRL0 + STMP_OFFSET_REG_SET);
+ 	} else {
+@@ -231,6 +221,24 @@
+ 		writel(1 << (chan_id + BP_APBHX_CHANNEL_CTRL_RESET_CHANNEL),
+ 			mxs_dma->base + HW_APBHX_CHANNEL_CTRL + STMP_OFFSET_REG_SET);
+ 	}
++}
++
++static void mxs_dma_reset_chan(struct dma_chan *chan)
++{
++	struct mxs_dma_chan *mxs_chan = to_mxs_dma_chan(chan);
++
++	/*
++	 * mxs dma channel resets can cause a channel stall. To recover from a
++	 * channel stall, we have to reset the whole DMA engine. To avoid this,
++	 * we use cyclic DMA with semaphores, that are enhanced in
++	 * mxs_dma_int_handler. To reset the channel, we can simply stop writing
++	 * into the semaphore counter.
++	 */
++	if (mxs_chan->flags & MXS_DMA_USE_SEMAPHORE &&
++			mxs_chan->flags & MXS_DMA_SG_LOOP)
++		mxs_chan->reset = true;
++	else
++		mxs_dma_reset_chan_hw(mxs_chan);
+ 
+ 	mxs_chan->status = DMA_COMPLETE;
+ }
+@@ -301,6 +309,17 @@
+ 	return 0;
+ }
+ 
++/*
++ * A paused (frozen) channel does not run its semaphore down, so it cannot be
++ * stopped by the semaphore. Unfreeze it and reset it.
++ */
++static void mxs_dma_abort_paused(struct mxs_dma_chan *mxs_chan)
++{
++	mxs_dma_resume_chan(&mxs_chan->chan);
++	mxs_dma_reset_chan_hw(mxs_chan);
++	mxs_chan->status = DMA_COMPLETE;
++}
++
+ static dma_cookie_t mxs_dma_tx_submit(struct dma_async_tx_descriptor *tx)
+ {
+ 	return dma_cookie_assign(tx);
+@@ -596,6 +615,10 @@
+ 	if (mxs_chan->status == DMA_IN_PROGRESS)
+ 		return NULL;
+ 
++	/* left paused, e.g. by a PCM suspended and then prepared again */
++	if (mxs_chan->status == DMA_PAUSED)
++		mxs_dma_abort_paused(mxs_chan);
++
+ 	mxs_chan->status = DMA_IN_PROGRESS;
+ 	mxs_chan->flags |= MXS_DMA_SG_LOOP;
+ 	mxs_chan->flags |= MXS_DMA_USE_SEMAPHORE;
+@@ -650,12 +673,52 @@
+ 
+ static int mxs_dma_terminate_all(struct dma_chan *chan)
+ {
+-	mxs_dma_reset_chan(chan);
++	struct mxs_dma_chan *mxs_chan = to_mxs_dma_chan(chan);
++
++	if (mxs_chan->status == DMA_PAUSED)
++		mxs_dma_abort_paused(mxs_chan);
++	else
++		mxs_dma_reset_chan(chan);
+ 	mxs_dma_disable_chan(chan);
+ 
+ 	return 0;
+ }
+ 
++/*
++ * A terminated cyclic channel is not reset (see mxs_dma_reset_chan) but runs
++ * on until its semaphore is used up, up to two periods. A transfer started
++ * meanwhile would find it still running: the next command is replaced under
++ * it and the position jumps back. Wait until it has stopped. If it does not
++ * move (the peripheral no longer asks for data), reset it.
++ */
++static void mxs_dma_synchronize(struct dma_chan *chan)
++{
++	struct mxs_dma_chan *mxs_chan = to_mxs_dma_chan(chan);
++	struct mxs_dma_engine *mxs_dma = mxs_chan->mxs_dma;
++	void __iomem *sema = mxs_dma->base +
++			HW_APBHX_CHn_SEMA(mxs_dma, chan->chan_id);
++	void __iomem *bar = mxs_dma->base +
++			HW_APBHX_CHn_BAR(mxs_dma, chan->chan_id);
++	u32 last = readl(bar);
++	int still = 0;
++
++	while (mxs_chan->reset && (readl(sema) & BM_APBHX_CHn_SEMA_PHORE)) {
++		usleep_range(1000, 2000);
++		if (readl(bar) != last) {
++			last = readl(bar);
++			still = 0;
++		} else if (++still >= 10) {
++			dev_dbg(mxs_dma->dma_device.dev,
++				"channel %d does not run dry, resetting it\n",
++				chan->chan_id);
++			mxs_dma_reset_chan_hw(mxs_chan);
++			break;
++		}
++	}
++
++	tasklet_kill(&mxs_chan->tasklet);
++}
++
+ static enum dma_status mxs_dma_tx_status(struct dma_chan *chan,
+ 			dma_cookie_t cookie, struct dma_tx_state *txstate)
+ {
+@@ -861,6 +924,7 @@
+ 	mxs_dma->dma_device.device_pause = mxs_dma_pause_chan;
+ 	mxs_dma->dma_device.device_resume = mxs_dma_resume_chan;
+ 	mxs_dma->dma_device.device_terminate_all = mxs_dma_terminate_all;
++	mxs_dma->dma_device.device_synchronize = mxs_dma_synchronize;
+ 	mxs_dma->dma_device.src_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
+ 	mxs_dma->dma_device.dst_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
+ 	mxs_dma->dma_device.directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV);
