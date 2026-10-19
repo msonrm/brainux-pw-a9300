@@ -1,0 +1,30 @@
+From: brainux-pw-a9300
+Subject: [PATCH] drm/tiny: brain-lq050j1ug01: prefer depth 16
+
+The plane only takes RGB565, but the driver leaves preferred_depth at 0.
+The Xorg modesetting driver then probes for 32 bpp: it creates a dumb
+buffer of the minimum size and adds an XRGB8888 framebuffer, which is
+refused. It falls back to 24 bpp, which the plane does not take either,
+so setting the mode fails and X keeps retrying ("failed to add fb -22").
+With DRM_CAP_DUMB_PREFERRED_DEPTH at 16, modesetting uses 16 bpp
+directly.
+
+Through modesetting, X tells the driver what changed and the frame goes
+to the panel right away. Through the fbdev emulation (Xorg's fbdev
+driver), deferred I/O sends it at most every 50 ms, so the pointer moved
+20 times a second at most.
+
+Seen on Brain PW-A9300 with Xorg 21.1.16 (Debian trixie).
+
+diff --git a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+--- a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
++++ b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+@@ -678,6 +678,8 @@
+ 	drm->mode_config.max_width = width;
+ 	drm->mode_config.min_height = height;
+ 	drm->mode_config.max_height = height;
++	/* The plane only takes RGB565 (see formats). */
++	drm->mode_config.preferred_depth = 16;
+
+ 	drm_connector_helper_add(&ili->connector, &brain_connector_helper_funcs);
+ 	ret = drm_connector_init(drm, &ili->connector, &brain_connector_funcs, DRM_MODE_CONNECTOR_DPI);
