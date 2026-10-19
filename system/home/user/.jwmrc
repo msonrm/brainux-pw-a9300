@@ -5,4 +5,9 @@
 
     <!-- Home key (F14 in the keymap, XF86Launch5 in X): the root menu -->
     <Key key="XF86Launch5">root:1</Key>
+
+    <!-- Move and resize as an outline, without the coordinates: redrawing the
+         window at every step was too heavy for the Brain while dragging -->
+    <MoveMode coordinates="off">outline</MoveMode>
+    <ResizeMode coordinates="off">outline</ResizeMode>
 </JWM>

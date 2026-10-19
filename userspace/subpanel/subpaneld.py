@@ -95,6 +95,21 @@ TAP_RANGE = 20                      # sub panel px a tap stays within (jumps inc
 # buttons are left of MAIN_LEFT_X and right of MAIN_RIGHT_X (the display edges),
 # split by y.
 MAIN_LEFT_X, MAIN_RIGHT_X = 237, 3627
+# SX8654 sends a sample every 3.6 ms, steady to 1 px, but the last one before
+# the release jumps (up to 100 px, 8 of 11 touches, 2026-10-20): display
+# touches go on this many samples late and the ones left at the release are
+# dropped (7 ms)
+MAIN_HOLD = 2
+# A tap wanders before the release (pen up to 7 px, finger up to 17), and JWM
+# keeps its root menu open only when the release is within 2 px of the press:
+# the pointer stays at the press point until the touch has moved this far
+# (screen px; the display is 480 x 320 over raw 3390 x 3874)
+MAIN_SLOP = 10
+MAIN_RAW_PER_PX_X, MAIN_RAW_PER_PX_Y = 3390 / 480, 3874 / 320
+# While dragging, X gets the newest point at most this often: 280 points a
+# second kept X redrawing a window being moved on a CPU already busy reading
+# them (2026-10-20: SX8654's irq thread 22 %, X 21 %, this 14 %)
+MAIN_INTERVAL = 1 / 60
 MAIN_LEFT = [(3000, "prev_heading"), (2000, "page_up"), (1050, "page_down"),
              (-1, "next_heading")]          # 前見出 ↑ ↓ 次見出
 MAIN_RIGHT = [(3450, "handwriting"), (2960, "kana_keys"), (2460, "memo"),
@@ -227,6 +242,14 @@ class MainPanel:
         self.x = self.y = None
         self.kind = None       # None (not touched), "screen", "left" or "right"
         self.pts = []
+        self.held = []         # display frames not sent yet (MAIN_HOLD), with x, y
+        self.down_sent = False
+        self.press = None      # raw point of the press, until the touch leaves MAIN_SLOP
+        self.pending = None    # newest point of a drag not sent yet (MAIN_INTERVAL)
+        self.sent_at = 0.0
+        self.start = None      # where and when the touch began, and its samples (log)
+        self.n = 0
+        self.reads = []        # (delay, events) of each read (log)
 
     def event(self, typ, code, val):
         if typ != EV_SYN:
@@ -242,9 +265,38 @@ class MainPanel:
             self.kind = ("left" if self.x < MAIN_LEFT_X else
                          "right" if self.x > MAIN_RIGHT_X else "screen")
             self.pts = []
+            self.held = []
+            self.down_sent = False
+            self.press = (self.x, self.y)
+            self.start = (self.x, self.y, time.monotonic())
+            self.n = 0
+            self.reads = []
             if self.kind != "screen":
                 log(f"main {self.kind} at ({self.x},{self.y})")
-        if self.kind in (None, "screen"):
+        if self.kind == "screen":
+            if touch and not touch[-1]:
+                if self.held and not self.down_sent:
+                    self.ts.send(self.held[0][0])  # a short tap: the press, where it began
+                self.held = []
+                if self.pending:
+                    self.ts.send([(EV_ABS, ABS_X, self.pending[0]),
+                                  (EV_ABS, ABS_Y, self.pending[1])])
+                    self.pending = None
+                self.ts.send(frame)
+                x0, y0, t0 = self.start
+                late = sorted(d for d, _ in self.reads) or [0]
+                log(f"main screen ({x0},{y0}) -> ({self.x},{self.y}) n={self.n} "
+                    f"{time.monotonic() - t0:.2f}s{' dragged' if self.press is None else ''} "
+                    f"reads={len(self.reads)} late median {late[len(late) // 2] * 1000:.0f} "
+                    f"max {late[-1] * 1000:.0f} ms, "
+                    f"{sum(e for _, e in self.reads) / max(1, len(self.reads)):.1f} events/read")
+            elif frame:
+                self.n += 1
+                self.held.append((frame, self.x, self.y))
+                if len(self.held) > MAIN_HOLD:
+                    self.send_screen(*self.held.pop(0))
+                    self.down_sent = True
+        elif self.kind is None:
             if frame:
                 self.ts.send(frame)
         elif self.y is not None:
@@ -253,6 +305,34 @@ class MainPanel:
             if self.kind in ("left", "right"):
                 self.button()
             self.kind = None
+
+    def send_screen(self, frame, x, y):
+        if not self.down_sent:
+            self.ts.send(frame)
+            return
+        rest = [e for e in frame if e[0] != EV_ABS]
+        if self.press:
+            if (abs(x - self.press[0]) / MAIN_RAW_PER_PX_X <= MAIN_SLOP
+                    and abs(y - self.press[1]) / MAIN_RAW_PER_PX_Y <= MAIN_SLOP):
+                if rest:
+                    self.ts.send(rest)  # stay at the press
+                return
+            self.press = None  # dragging from here on
+        now = time.monotonic()
+        if not rest and now - self.sent_at < MAIN_INTERVAL:
+            self.pending = (x, y)
+            return
+        self.ts.send(rest + [(EV_ABS, ABS_X, x), (EV_ABS, ABS_Y, y)])
+        self.sent_at = now
+        self.pending = None
+
+    def flush(self, now):
+        """Send the newest point of a drag once MAIN_INTERVAL has passed."""
+        if self.pending and now - self.sent_at >= MAIN_INTERVAL:
+            self.ts.send([(EV_ABS, ABS_X, self.pending[0]),
+                          (EV_ABS, ABS_Y, self.pending[1])])
+            self.sent_at = now
+            self.pending = None
 
     def button(self):
         # SX8654 jumps a lot just before release: use the median of the middle
@@ -1007,6 +1087,8 @@ def main():
         while True:
             # wake often only while touched (long press); else at the next poll
             wait = 0.05 if st else min(3600, max(0.05, status.next_poll - time.monotonic()))
+            if main_panel.pending:
+                wait = min(wait, MAIN_INTERVAL)
             if power.animating:
                 wait = FRAME
             elif power.polling:
@@ -1038,8 +1120,12 @@ def main():
                 status.update(now, force=True)
             if main_touch in r:
                 data = os.read(main_touch, 16 * 64)
+                if VERBOSE and data:     # how late the oldest event is read
+                    sec, usec = struct.unpack_from("<II", data)
+                    main_panel.reads.append((time.time() - sec - usec / 1e6, len(data) // 16))
                 for i in range(0, len(data) - 15, 16):
                     main_panel.event(*struct.unpack_from("<HHi", data, i + 8))
+            main_panel.flush(now)
             if touch in r:
                 data = os.read(touch, 16 * 64)
                 for i in range(0, len(data) - 15, 16):
