@@ -50,11 +50,12 @@ git apply ../brainux-pw-a9300/kernel/0009-ARM-mxs-pm-put-the-DRAM-into-self-refr
 git apply ../brainux-pw-a9300/kernel/0010-drm-tiny-brain-lq050j1ug01-stop-the-LCDIF-for-suspend-and-recover-a-stuck-transfer.patch
 git apply ../brainux-pw-a9300/kernel/0011-spi-mxs-Fix-chipselect-glitch.patch
 git apply ../brainux-pw-a9300/kernel/0012-ASoC-ymu818-turn-the-amp-off-for-suspend.patch
+git apply ../brainux-pw-a9300/kernel/0013-brain-kbd-i2c-read-keys-in-the-IRQ-thread.patch
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build brain_defconfig
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build -j8 zImage dtbs modules
 ```
 
-0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）。0004〜0007 はサブ液晶と枠のボタンのためで、subpaneld はこれを前提にしています。0004 はサブ液晶の 3 画素ごとに縦線が出るのを直し、0005・0006 はタッチが押されたまま固まるのを直し（タッチと電池の電圧を読む ADC が割り込みのフラグを取り合っていた）、0007 はメイン液晶の枠のしおり・Home・辞書メニューのボタンに F13〜F15 を割り当てます（DTS の変更なので DTB に入ります。どれも [subpanel.md](subpanel.md)）。0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするためのものです（[audio-ymu818.md](audio-ymu818.md)）。0009 は眠り方が `deep` のときだけ働きます（カーネルの既定は s2idle。下の「サスペンド」の設定で `deep` にします）。音だけでよければ 0001 だけでも動きます。
+0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）。0004〜0007 はサブ液晶と枠のボタンのためで、subpaneld はこれを前提にしています。0004 はサブ液晶の 3 画素ごとに縦線が出るのを直し、0005・0006 はタッチが押されたまま固まるのを直し（タッチと電池の電圧を読む ADC が割り込みのフラグを取り合っていた）、0007 はメイン液晶の枠のしおり・Home・辞書メニューのボタンに F13〜F15 を割り当てます（DTS の変更なので DTB に入ります。どれも [subpanel.md](subpanel.md)）。0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするため（[audio-ymu818.md](audio-ymu818.md)）、0013 はキーボードのドライバが割り込みの中で I2C を読むのをやめ、同じ I2C0 にいる音のチップやタッチと読み書きが重なっても落ちないようにするためのものです（キーを押し続けながら音を鳴らし始めたり止めたりすると、カーネルが `scheduling while atomic` を出し、タッチが効かなくなることがありました）。0009 は眠り方が `deep` のときだけ働きます（カーネルの既定は s2idle。下の「サスペンド」の設定で `deep` にします）。音だけでよければ 0001 だけでも動きます。
 
 `git apply` で当てると、カーネルの版は `6.1.70-ga9f534c7f53e-dirty` になります。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。
 

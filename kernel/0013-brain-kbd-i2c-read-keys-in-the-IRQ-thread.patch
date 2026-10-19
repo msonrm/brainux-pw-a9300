@@ -1,0 +1,38 @@
+From: brainux-pw-a9300
+Subject: [PATCH] Input: brain-kbd-i2c: read the keys in the IRQ thread
+
+The driver passes its handler to devm_request_threaded_irq() as the
+primary (hard IRQ) handler and NULL as the thread function, so the
+handler runs in hard IRQ context. It reads the key codes with
+i2c_smbus_read_word_swapped(), which takes the adapter's bus lock and
+waits for the transfer. When another device on the same I2C bus is in
+the middle of a transfer, this sleeps in atomic context:
+
+  BUG: scheduling while atomic
+  ... i2c_smbus_xfer <- i2c_smbus_read_word_data <- bk_i2c_irq_handler
+  <- ... mxs_gpio_irq_handler
+
+On PW-A9300 this happened while keys were auto-repeating and the audio
+codec on I2C0 was being powered up/down by opening/closing the PCM.
+The kernel survived, but the irq thread of the main LCD touch panel
+(sx8650) oopsed and exited, so the touch panel stopped until reboot.
+
+Pass the handler as the thread function, as IRQF_ONESHOT already
+expects and as other I2C input drivers do (tca8418, sx8654).
+
+diff --git a/drivers/input/keyboard/brain-kbd-i2c.c b/drivers/input/keyboard/brain-kbd-i2c.c
+index 6f07c7a..a83f2c2 100644
+--- a/drivers/input/keyboard/brain-kbd-i2c.c
++++ b/drivers/input/keyboard/brain-kbd-i2c.c
+@@ -440,8 +440,9 @@ static int bk_i2c_probe(struct i2c_client *cli, const struct i2c_device_id *id)
+ 
+ 	i2c_smbus_read_word_data(kbd->cli, 0x04);
+ 
+-	err = devm_request_threaded_irq(&cli->dev, cli->irq, bk_i2c_irq_handler,
+-					NULL, IRQF_ONESHOT,
++	/* The handler reads over I2C, which may sleep: run it in the IRQ thread */
++	err = devm_request_threaded_irq(&cli->dev, cli->irq,
++					NULL, bk_i2c_irq_handler, IRQF_ONESHOT,
+ 					BRAIN_KBD_I2C_DEV_NAME, kbd);
+ 	if (err) {
+ 		dev_err(&cli->dev, "failed to request irq: %d\n", err);
