@@ -42,7 +42,7 @@ The sub panel only shows anything once X stops holding card1 (docs/subpanel.md).
 
 Usage: subpaneld.py [-v]
 """
-import fcntl, mmap, os, re, select, signal, socket, struct, subprocess, sys, time
+import fcntl, math, mmap, os, re, select, signal, socket, struct, subprocess, sys, time
 
 TOUCH = "mxs-lradc-ts"                  # input device names
 MAIN_TOUCH = "SX8654 I2C Touchscreen"
@@ -69,12 +69,28 @@ VERBOSE = "-v" in sys.argv
 BUTTON_X = 3550
 BUTTONS = [(2960, "volume_up"), (2130, "volume_down"), (1350, "backlight"),
            (-1, "clear")]
-RAW_PER_PX = 3080 / 240            # raw units per sub panel pixel
-SKIP = 2                            # samples dropped at press and release
-START = 4                           # sub panel px from the press point before moving
-# pointer gain (screen px per sub panel px) by finger speed (sub panel px/s)
-SLOW, SLOW_GAIN = 30, 1.0
-FAST, FAST_GAIN = 300, 3.0
+# raw units per sub panel pixel: the 240 x 120 px panel is about 3080 x 2920 raw
+RAW_PER_PX_X, RAW_PER_PX_Y = 3080 / 240, 2920 / 120
+SKIP = 2                            # button: samples dropped at press and release
+# Touchpad (measured 2026-10-19, userspace/subpanel/touchrec.py): a sample every
+# 26 ms; the first one of a press jumps (up to 6 px, mostly in y) and so does
+# the last before the release; a still finger jitters (sd 0.6 px in x, 1.2 px
+# in y) and creeps a few px. The first sample is dropped, and the pointer runs
+# one sample behind on the median of the newest three (drops a lone spike and
+# the jump at the release), then through a One Euro filter (Casiez et al.
+# 2012: smooths hard while slow, lightly while fast) and a hysteresis.
+START = 3                           # sub panel px before a stroke moves (kept, not dropped)
+HYST = 1.0                          # sub panel px of jitter left out while moving
+MIN_CUTOFF, BETA, D_CUTOFF = 1.0, 0.1, 10.0     # One Euro: Hz, Hz per px/s, Hz
+# pointer gain (screen px per sub panel px) by finger speed (sub panel px/s),
+# smooth from MIN_GAIN to MAX_GAIN, half way at HALF_SPEED. Measured: slow
+# strokes ~50 px/s, normal ~100-170, flicks ~1000.
+MIN_GAIN, MAX_GAIN, HALF_SPEED = 1.0, 3.0, 250
+Y_GAIN = 1.2                        # a little more up and down: the panel is only 120 px high
+REPRESS = 0.12                      # a press this soon after the release goes on with
+                                    # the stroke (the touch chatters: 27-99 ms gaps)
+TAP_RANGE = 20                      # sub panel px a tap stays within (jumps included;
+                                    # taps measured up to 7, flicks from 76)
 # Main display, raw: the display is x 237-3627 (X calibration); printed
 # buttons are left of MAIN_LEFT_X and right of MAIN_RIGHT_X (the display edges),
 # split by y.
@@ -853,58 +869,68 @@ class Stroke:
         self.start = now
         self.pts = []          # raw (x, y, time) samples
         self.kind = None       # "pad" or "button", decided after SKIP samples
-        self.anchor = None     # smoothed point where the stroke settled
-        self.last = None       # smoothed point last turned into motion
+        self.pad = []          # pad: (x, y, time) in sub panel px, y down
+        self.fresh = True      # the next sample is the first of a press (dropped)
+        self.filt = None       # One Euro: x, y, vx, vy, time
+        self.ref = None        # point the pointer stands for
+        self.up = None         # time of the release, until REPRESS has passed
         self.moving = False
         self.long_done = False
 
 
-def smoothed(pts, k):
-    """Median of samples k-1..k+1 (raw x, y), and the time of sample k."""
-    win = pts[k - 1:k + 2]
-    xs = sorted(p[0] for p in win)
-    ys = sorted(p[1] for p in win)
-    return xs[1], ys[1], pts[k][2]
+def alpha(cutoff, dt):
+    return 1 / (1 + 1 / (2 * math.pi * cutoff * dt))
 
 
 def gain(speed):
-    if speed <= SLOW:
-        return SLOW_GAIN
-    if speed >= FAST:
-        return FAST_GAIN
-    return SLOW_GAIN + (FAST_GAIN - SLOW_GAIN) * (speed - SLOW) / (FAST - SLOW)
+    s2 = speed * speed
+    return MIN_GAIN + (MAX_GAIN - MIN_GAIN) * s2 / (s2 + HALF_SPEED * HALF_SPEED)
 
 
 def on_sample(st, x, y, t, mouse):
     st.pts.append((x, y, t))  # t: event time, only for speed
-    n = len(st.pts)
-    if n <= SKIP:
-        return
-    if st.kind is None:
+    if st.kind is None and len(st.pts) > SKIP:
         st.kind = "button" if x >= BUTTON_X else "pad"
         log(f"stroke {st.kind} at ({x},{y})")
-    # look SKIP samples behind, so the jump at release is never used
-    k = n - 1 - SKIP
-    if st.kind != "pad" or k < SKIP + 1:
+    if st.fresh:
+        st.fresh = False
         return
-    p = smoothed(st.pts, k)
-    if st.anchor is None:
-        st.anchor = st.last = p
+    st.pad.append((x / RAW_PER_PX_X, -y / RAW_PER_PX_Y, t))  # raw y grows upward
+    if st.kind == "button" or len(st.pad) < 2:
         return
+    # one sample behind: the median of the newest three stands for the one before
+    win = st.pad[-3:]
+    mx = sorted(p[0] for p in win)[len(win) // 2]
+    my = sorted(p[1] for p in win)[len(win) // 2]
+    t = st.pad[-2][2]
+    f = st.filt
+    if f is None:
+        st.filt = [mx, my, 0.0, 0.0, t]
+        st.ref = (mx, my)
+        return
+    dt = max(t - f[4], 0.001)
+    a = alpha(D_CUTOFF, dt)
+    f[2] += a * ((mx - f[0]) / dt - f[2])
+    f[3] += a * ((my - f[1]) / dt - f[3])
+    speed = math.hypot(f[2], f[3])
+    a = alpha(MIN_CUTOFF + BETA * speed, dt)
+    f[0] += a * (mx - f[0])
+    f[1] += a * (my - f[1])
+    f[4] = t
+    dx, dy = f[0] - st.ref[0], f[1] - st.ref[1]
     if not st.moving:
-        dist = max(abs(p[0] - st.anchor[0]), abs(p[1] - st.anchor[1]))
-        if dist < START * RAW_PER_PX:
+        if max(abs(dx), abs(dy)) < START:
             return
         st.moving = True
-        st.last = p
         log("moving")
-        return
-    dx = (p[0] - st.last[0]) / RAW_PER_PX
-    dy = (st.last[1] - p[1]) / RAW_PER_PX  # raw y grows upward
-    dt = max(p[2] - st.last[2], 0.001)
-    st.last = p
-    g = gain((dx * dx + dy * dy) ** 0.5 / dt)
-    mouse.move(dx * g, dy * g)
+    else:
+        d = math.hypot(dx, dy)
+        if d <= HYST:
+            return
+        dx, dy = dx * (1 - HYST / d), dy * (1 - HYST / d)
+    st.ref = (st.ref[0] + dx, st.ref[1] + dy)
+    g = gain(speed)
+    mouse.move(dx * g, dy * g * Y_GAIN)
 
 
 def on_release(st, now, mouse, status):
@@ -912,9 +938,14 @@ def on_release(st, now, mouse, status):
         return
     if st.kind is None:  # too short to decide while touching
         st.kind = "button" if st.pts[0][0] >= BUTTON_X else "pad"
-    log(f"release {st.kind} n={len(st.pts)} {now - st.start:.3f}s")
+    log(f"release {st.kind} n={len(st.pts)} {st.up - st.start:.3f}s")
     if st.kind == "pad":
-        if not st.long_done and not st.moving and now - st.start < TAP_TIME:
+        xs = [p[0] for p in st.pts]
+        ys = [p[1] for p in st.pts]
+        spread = max((max(xs) - min(xs)) / RAW_PER_PX_X,
+                     (max(ys) - min(ys)) / RAW_PER_PX_Y)
+        if (not st.long_done and not st.moving and st.up - st.start < TAP_TIME
+                and len(st.pts) >= 2 and spread < TAP_RANGE):
             mouse.click(BTN_LEFT)
             log("tap -> left click")
     elif st.kind == "button":
@@ -934,7 +965,7 @@ def on_release(st, now, mouse, status):
 
 
 def check_long(st, now, mouse):
-    if (st and st.kind == "pad" and not st.long_done
+    if (st and st.kind == "pad" and not st.long_done and st.up is None
             and not st.moving and now - st.start >= LONG_TIME):
         st.long_done = True
         mouse.click(BTN_RIGHT)
@@ -1018,13 +1049,21 @@ def main():
                     elif typ == EV_ABS and code == ABS_Y:
                         y = val
                     elif typ == EV_KEY and code == BTN_TOUCH:
-                        if val:
+                        if (val and st and st.up is not None and st.kind != "button"
+                                and now - st.up < REPRESS):
+                            st.up = None        # chatter: the same stroke goes on
+                            st.fresh = True
+                        elif val:
+                            if st:
+                                on_release(st, now, mouse, status)
                             st = Stroke(now)
                         elif st:
-                            on_release(st, now, mouse, status)
-                            st = None
-                    elif typ == EV_SYN and st and x is not None:
+                            st.up = now
+                    elif typ == EV_SYN and st and st.up is None and x is not None:
                         on_sample(st, x, y, sec + usec / 1e6, mouse)
+            if st and st.up is not None and now - st.up >= REPRESS:
+                on_release(st, now, mouse, status)
+                st = None
             apps.ready(r)
             check_long(st, now, mouse)
             if not power.animating:     # reading the volume runs amixer, slow on the Brain
