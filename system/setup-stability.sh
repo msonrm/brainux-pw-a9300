@@ -27,6 +27,8 @@ run "sysctl -q -p /etc/sysctl.d/90-brain-console-loglevel.conf"
 #    シリアルの getty（console=ttyAMA0 から generator が作るので disable では止まらず mask）
 run "systemctl disable --now brain-config.service triggerhappy.socket triggerhappy.service e2scrub_reap.service e2scrub_all.timer cron.service avahi-daemon.socket avahi-daemon.service"
 run "systemctl mask --now serial-getty@ttyAMA0.service"
+#    triggerhappy の udev ルールは、本体を止めても入力デバイスごとに th-cmd を起こして失敗するので消す
+run "ln -sf /dev/null /etc/udev/rules.d/60-triggerhappy.rules"
 for u in ethernet_gadget networking; do
 	run "install -D -m644 etc/systemd/system/$u.service.d/brain-only-peripheral.conf /etc/systemd/system/$u.service.d/brain-only-peripheral.conf"
 done

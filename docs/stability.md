@@ -81,7 +81,7 @@ Brainux の起動は、カーネル 4 秒のあとユーザー空間に 1 分 32
 | 止めたもの | 起動にかかっていた時間 | 理由 |
 |---|---|---|
 | `brain-config.service` | 17 秒 | CPU のガバナーを ondemand にするだけ。このカーネルには cpufreq がない（[power.md](power.md)）。そのうえ Shift を見るため `thd --dump` で入力デバイスを全部 1 秒開く |
-| `triggerhappy.service`・`.socket` | 6.7 秒、常駐 1.5MB | 割り当て（`/etc/triggerhappy/triggers.d/`）が空。入力デバイスを全部開いていた |
+| `triggerhappy.service`・`.socket` | 6.7 秒、常駐 1.5MB | 割り当て（`/etc/triggerhappy/triggers.d/`）が空。入力デバイスを全部開いていた。udev のルール（`60-triggerhappy.rules`）は本体を止めても残り、入力デバイスが見つかるたびに `th-cmd` を起こして失敗していた（起動 1 回に 7 回）ので、`/etc/udev/rules.d/` に `/dev/null` へのリンクを置いて消した（2026-10-20） |
 | `e2scrub_reap.service`・`e2scrub_all.timer` | 20 秒 | LVM のスナップショットで ext4 を調べる仕組み。ルートは LVM ではない |
 | `cron.service` | 常駐 2MB | `/etc/cron.daily` などの中身は、どれも systemd があれば何もしない（タイマーが代わりに動く） |
 | `avahi-daemon.service`・`.socket` | 16 秒、常駐 3MB | `brain.local` の名前で見つけてもらう仕組み。IP でつないでいる |
@@ -111,9 +111,18 @@ journal は上限がなく、SD に 203MB たまっていました。`system/etc
 - `kernel/0015`: mxs-dma に「止めた周期 DMA が走り切るまで待つ」処理を足した（10 ms 進まなければ、そのときはリセットする）。眠るときに pause（凍結）されたまま、resume ではなく prepare で戻されたチャンネルは、凍結を解いてリセットする（前は凍結されたまま残るはずで、眠ったあと最初に鳴らすと音が出なかったことがあったのは、これと見ている。0015 の前の版では確かめていない）
 - 確かめたこと（#20、2026-10-19、ハブあり）: 止めてすぐ鳴らし直すのを 6 回くり返して、アンダーラン 0 回（毎秒約 44100 フレーム）。開いたまま蓋で `deep` に眠らせ、起きてから prepare で戻した 1 回目と、そのあとすぐ鳴らし直したときも 0 回。測る道具は無音を書くだけで、耳では聞いていない。起きたあと、同じ DMA のドライバを使う I2C のキーボードとメイン液晶のタッチもふだんどおり（本人）
 
-## 7. その他の注意
+## 7. 起動のときに X が立ち上がらない（メモリの断片化、2026-10-20）
+
+- 症状: 起動の途中で、ログイン画面（ly）が立ち上げた X が `Fatal server error: AddScreen/ScreenInit failed for driver 0` で止まり、画面に X のログが残った。カーネルに DRM のエラーはない。同じカーネルのまま、あとで root で X を手で起動したり、ly でログインし直したりすると立ち上がった
+- 原因（と見ていること）: X の `modesetting` ドライバは、起動のときに画面のバッファ（480×320、16 bpp で 300 KB）をカーネルに作らせる。このカーネルには CMA がなく（`0K cma-reserved`）、DMA に使う連続したメモリはふつうのページの割り当てから取る。300 KB は 512 KB のひとかたまり（order 7）になり、DRM は失敗しても警告を出さない形で頼む（`__GFP_NOWARN`）。起動の直後は 128 MB の RAM で一度にいろいろ立ち上がるので細切れになりやすく、その起動では寄せ集め（compaction）が 5 回試みられて 5 回とも失敗していた（`/proc/vmstat` の `compact_fail 5`、`compact_success 0`）。失敗したのは ScreenInit の最初のほう（バッファを作る段）で、そこまでの記録は正常だった。前の X の `fbdev` ドライバはカーネルが起動の最初に取ったバッファを使い回していたので、このバッファが要るようになったのは X を `modesetting` にしてから（`kernel/0016`）。1 回しか起きていない
+- 手当て（`kernel/0019`、defconfig）: CMA を 4 MB 取っておく（`CONFIG_CMA`・`CONFIG_DMA_CMA`・`CONFIG_CMA_SIZE_MBYTES=4`）。取っておいた場所は、使われていない間はふつうのページ（ファイルのキャッシュなど、よそへ移せるもの）が借りるので、`/proc/meminfo` の `CmaFree` が小さくても困らない。DMA のバッファが要るときに、借りているページを移して空ける
+- CMA を入れるとカーネルの関数の版の印（modversions）が変わり、CMA の前のカーネルに合わせて作ったモジュールが読み込めなくなる（`disagrees about version of symbol`）。#25 で、外付けの uinput と rtl8xxxu66 が読み込まれず、subpaneld（サブ液晶が WinCE の表示のまま）と Wi-Fi が動かなかった。0019 で版の名前に `-pwa9300` をつけ（`CONFIG_LOCALVERSION`、版は `6.1.70-pwa9300-ga9f534c7f53e-dirty`）、モジュールの置き場所を分けた。CMA の前のカーネル（`6.1.70-ga9f534c7f53e-dirty`）のモジュールも残せるので、戻すときは `zImage` を替えるだけで済む
+- 確かめたこと（#26、2026-10-20）: `cma: Reserved 4 MiB at 0x47c00000`。uinput・rtl8xxxu66 が読み込まれ、subpaneld・Wi-Fi も動く。X はログインし直さずに一度で立ち上がった（2 回）。もともと 1 回しか起きていないので、直ったかはふだん使いながら見る
+
+## 8. その他の注意
 
 - 固まって電源を切ると、直前に書いたファイルが **0 バイト**になっていることがある（ext4 のデータがまだ書き出されていなかった）。大事なファイルを書いたら `sync`
 - Chromebook（Crostini）から SD カードの ext4 に `cp` で書いたファイルが 0 バイトになったことがあった。書いたら fsync し、読み返して確かめる。SD はファイルアプリで「取り出し」てから抜く
+- ルートの ext4 は、カーネルの引数が `rw` で最初から書き込める状態でマウントされるので、起動のときの fsck（systemd-fsck-root）が働かない。引数は WinCE から起動するローダーに入っていて変えにくい。2026-10-11 に `/etc/dhcp` のディレクトリのチェックサムのエラーが 1 回出て、それから起動のたびに `mounting fs with errors` が出ていた。2026-10-20 に、SD を USB のカードリーダーで Chromebook に挿し、ChromeOS の設定の「USB デバイスの管理」で Linux に渡して（`/dev/sda` に見える。本体の SD スロットは渡せない）、`e2fsck -fn` で読むだけの検査をすると何も壊れていなかった（1 回だけ読み出しが化けたと見ている）。`e2fsck -fp` で「エラーあり」の印を消した。`/boot`（FAT）の「正しくアンマウントされていない」も、`fsck.fat -n`（dosfstools）で調べると印（dirty bit）だけだったので、`fsck.fat -a` で消した。`/boot` を書き込みできる状態にしている間に電源が切れると、この印が残る
 - Brain の sshd は鍵交換に数秒かかり、負荷が高いと 10 秒を超える。`ssh -o ConnectTimeout=40` にする。`scp` は途中で止まることがあったので、`ssh brain 'cat > f' < f` で送ってチェックサムを比べた
 - 大きなファイルを Wi-Fi で送るときは、速さを抑えると安定した（`userspace/throttle.py`、100〜300KB/s）
