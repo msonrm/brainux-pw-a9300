@@ -12,7 +12,8 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   passed on unchanged through a uinput touchscreen, so X calibrates it as
   before. A touch that starts on the printed buttons left and right of the
   display is taken as that button (MAIN_KEYS): the left column sends
-  Home / Page Up / Page Down / End, the right column is not assigned yet.
+  Home / Page Up / Page Down / End, the right column F16-F22 from the top
+  (keys no other button sends, for the apps to take up).
 - A narrow strip at the right edge of the sub panel shows the volume (with a
   speaker or headphone icon for the output in use, struck through at 0), the
   brightness and the battery, each next to its printed button. Plugging or
@@ -146,9 +147,14 @@ ABS_X, ABS_Y, BTN_TOUCH = 0, 1, 0x14a
 REL_X, REL_Y = 0, 1
 BTN_LEFT, BTN_RIGHT, KEY_ESC = 0x110, 0x111, 1
 KEY_HOME, KEY_PAGEUP, KEY_END, KEY_PAGEDOWN = 102, 104, 107, 109
-# main display buttons that send a key (the others are not assigned yet)
+KEY_F16, KEY_F17, KEY_F18, KEY_F19, KEY_F20, KEY_F21, KEY_F22 = range(186, 193)
+# main display buttons and the keys they send: the right column gets F16-F22,
+# which nothing else sends, so any app can take them up (pmd-edit does)
 MAIN_KEYS = {"prev_heading": KEY_HOME, "page_up": KEY_PAGEUP,
-             "page_down": KEY_PAGEDOWN, "next_heading": KEY_END}
+             "page_down": KEY_PAGEDOWN, "next_heading": KEY_END,
+             "handwriting": KEY_F16, "kana_keys": KEY_F17, "memo": KEY_F18,
+             "back": KEY_F19, "enter": KEY_F20, "text_larger": KEY_F21,
+             "text_smaller": KEY_F22}
 EVIOCGRAB = 0x40044590
 UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_RELBIT = 0x40045564, 0x40045565, 0x40045566
 UI_SET_ABSBIT, UI_SET_PROPBIT = 0x40045567, 0x4004556e
