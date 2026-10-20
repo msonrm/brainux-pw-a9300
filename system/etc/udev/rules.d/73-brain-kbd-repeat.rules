@@ -1,0 +1,5 @@
+# The keyboard's key repeat: X's values (660 ms, then every 40 ms) for the text
+# console and the login screen too, instead of the kernel's 250 ms. Set each
+# time the keyboard appears, so it also holds after its driver is unbound and
+# bound again (e.g. by inputlog.py).
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="brain-kbd-i2c", RUN+="/usr/local/bin/brain-kbd-repeat $devnode"

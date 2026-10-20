@@ -19,6 +19,17 @@ sudo sh system/setup-stability.sh
 
 unaligned access の fixup、apt の自動更新の停止、スワップ 128MB、zswap、画面に出すカーネルのメッセージを重大なものだけにする設定（ログイン画面の上に Wi-Fi の知らせなどが書き込まれて乱れるのを防ぐ）が入り、使わないサービス（brain-config・triggerhappy・e2scrub・cron・avahi・シリアルの getty）を止め、journal を 50MB までにします（[stability.md](stability.md) の 4）。USB ケーブルでつなぐときのサービスは、OTG が peripheral の DTB のときだけ動くようになります。
 
+キーの繰り返しを X と同じにする（始まるまで 660 ms、そのあと 40 ms ごと）:
+
+```sh
+sudo install -D -m 755 system/usr/local/bin/brain-kbd-repeat /usr/local/bin/brain-kbd-repeat
+sudo install -D -m 644 system/etc/udev/rules.d/73-brain-kbd-repeat.rules /etc/udev/rules.d/73-brain-kbd-repeat.rules
+sudo udevadm control --reload
+sudo /usr/local/bin/brain-kbd-repeat "$(readlink -f /dev/input/by-path/platform-80058000.i2c-event-kbd)"   # 再起動を待たずに効かせる
+```
+
+X は自分で繰り返すので 660 ms で始まりますが、ログイン画面（ly）は文字の画面で動き、カーネルの既定の 250 ms で繰り返します。パスワードを一字ずつしっかり押すと、二重に入ることがありました。udev のルールが、キーボードが現れるたびに値を書きます（`inputlog.py` がキーボードのドライバを外して戻したあとも効きます）。
+
 固まったときの手がかりを残す（調べもの用。なくても動きます）:
 
 ```sh

@@ -1,0 +1,16 @@
+#!/usr/bin/python3
+# Give the keyboard X's key repeat: start after 660 ms, then every 40 ms.
+# X repeats keys itself with these values, but the text console (where ly,
+# the login screen, runs) uses the kernel's repeat, whose default is 250 ms:
+# a key held a little long while typing the password went in twice.
+# Run by /etc/udev/rules.d/73-brain-kbd-repeat.rules with the event node
+# whenever the keyboard appears. The values stay over suspend.
+import fcntl
+import struct
+import sys
+
+EVIOCSREP = 0x40084503  # _IOW('E', 0x03, unsigned int[2])
+DELAY_MS, PERIOD_MS = 660, 40
+
+with open(sys.argv[1], "rb") as f:
+    fcntl.ioctl(f, EVIOCSREP, struct.pack("II", DELAY_MS, PERIOD_MS))
