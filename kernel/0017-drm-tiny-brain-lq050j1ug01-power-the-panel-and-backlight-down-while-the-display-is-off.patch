@@ -1,0 +1,198 @@
+From: brainux-pw-a9300
+Subject: [PATCH] drm/tiny: brain-lq050j1ug01: power the panel and backlight down while the display is off
+
+The driver sets the sharp,en GPIOs high in probe and never lowers them,
+and leaves the backlight alone, so after a DPMS off or for a suspend the
+panel stays powered and the backlight stays lit. A measurement on PW-SH7
+(brain-hackers Scrapbox, "サスペンド") saw 15 mA less with the LCD
+driver's enable low.
+
+Take an optional enable GPIO and drive it low in .disable, and high
+again in .enable, 20 ms before the LCDIF and the panel are reset and
+initialized (which .enable already does). Take an optional backlight
+from the DT and turn it off first in .disable and on last in .enable.
+
+A panel powered up again shows random memory, so do not send Display On
+while initializing; send it after the first frame has gone to the
+panel. .enable sends that frame itself, as mipi_dbi_enable_flush() does,
+and then lights the backlight.
+
+The probe loop for sharp,en also lacked braces, so it always hit the
+continue and never reached gpiod_direction_output() (the pins were high
+anyway from GPIOD_OUT_HIGH).
+
+diff --git a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+--- a/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
++++ b/drivers/gpu/drm/tiny/brain-lq050j1ug01.c
+@@ -53,7 +53,10 @@
+ 	void __iomem *base;
+ 	struct platform_device *pdev;
+ 	struct clk *clk_lcdif;
++	struct gpio_desc *enable;	/* low while the display is off */
++	struct backlight_device *backlight;
+ 	bool enabled;
++	bool display_on;	/* Display On sent since the panel was reset */
+ 	bool reported;		/* registers of a stuck transfer logged once */
+ 
+ 	struct drm_simple_display_pipe pipe;
+@@ -354,8 +357,11 @@
+ 
+ 	brain_write_byte(ili, 0x34, 0);
+ 
+-	brain_write_byte(ili, 0x29, 0); /* Display On */
+-	mdelay(120);
++	/*
++	 * Display On waits for the first frame (see brain_fb_dirty_full()):
++	 * a panel that was powered off would show its random memory.
++	 */
++	ili->display_on = false;
+ 
+ 	brain_write_byte(ili, 0x2a, 0); /* Column Address Set */
+ 	brain_write_byte(ili, 0x00, 1); /* Start Column in 2 Bytes */
+@@ -388,6 +394,9 @@
+ 	writel(CTRL_MASTER | CTRL_RUN, ili->base + LCDC_CTRL + REG_SET);
+ }
+ 
++static void brain_fb_dirty_full(struct brain_drm_private *ili, struct drm_plane_state *plane_state,
++				struct drm_framebuffer *fb, struct drm_rect *rect);
++
+ static void brain_enable(struct drm_simple_display_pipe *pipe,
+ 			     struct drm_crtc_state *crtc_state,
+ 			     struct drm_plane_state *plane_state)
+@@ -398,10 +407,19 @@
+ 	if (!drm_dev_enter(pipe->crtc.dev, &idx))
+ 		return;
+ 
++	if (ili->enable) {
++		gpiod_set_value_cansleep(ili->enable, 1);
++		msleep(20);
++	}
+ 	clk_prepare_enable(ili->clk_lcdif);
+ 	brain_hw_init(ili, plane_state);
+ 	ili->enabled = true;
+ 
++	/* Light the backlight once the panel shows the frame. */
++	if (plane_state->fb)
++		brain_fb_dirty_full(ili, plane_state, plane_state->fb, NULL);
++	backlight_enable(ili->backlight);
++
+ 	drm_dev_exit(idx);
+ }
+ 
+@@ -409,6 +427,8 @@
+ {
+ 	struct brain_drm_private *ili = pipe_to_private(pipe);
+ 
++	backlight_disable(ili->backlight);
++
+ 	/*
+ 	 * Stop sending before the clock goes: a transfer cut off by the clock
+ 	 * (or by the DRAM going into self-refresh in a suspend) leaves CTRL_RUN
+@@ -418,6 +438,8 @@
+ 	if (brain_clear_poll(ili->base + LCDC_CTRL, CTRL_RUN, TX_TIMEOUT))
+ 		dev_warn(&ili->pdev->dev, "transfer still running at disable\n");
+ 	clk_disable_unprepare(ili->clk_lcdif);
++	if (ili->enable)
++		gpiod_set_value_cansleep(ili->enable, 0);
+ }
+ 
+ static void brain_recover(struct brain_drm_private *ili,
+@@ -436,6 +458,29 @@
+ 	brain_hw_init(ili, plane_state);
+ }
+ 
++/* Send Display On once the frame is in the panel's memory. */
++static void brain_display_on(struct brain_drm_private *ili)
++{
++	u32 valid;
++
++	if (brain_clear_poll(ili->base + LCDC_CTRL, CTRL_RUN, TX_TIMEOUT))
++		return;
++
++	writel(CTRL_MASTER | CTRL_DATA_SELECT, ili->base + LCDC_CTRL + REG_CLR);
++
++	valid = CTRL1_GET_BYTE_PACKAGING(readl(ili->base + LCDC_CTRL1));
++	writel(CTRL1_SET_BYTE_PACKAGING(0xf), ili->base + LCDC_CTRL1 + REG_CLR);
++	writel(CTRL1_SET_BYTE_PACKAGING(0x3), ili->base + LCDC_CTRL1 + REG_SET);
++
++	brain_write_byte(ili, 0x29, 0); /* Display On */
++
++	writel(CTRL1_SET_BYTE_PACKAGING(0xf), ili->base + LCDC_CTRL1 + REG_CLR);
++	writel(CTRL1_SET_BYTE_PACKAGING(valid), ili->base + LCDC_CTRL1 + REG_SET);
++
++	writel(CTRL_MASTER, ili->base + LCDC_CTRL + REG_SET);
++	ili->display_on = true;
++}
++
+ static void brain_fb_dirty_full(struct brain_drm_private *ili, struct drm_plane_state *plane_state,
+ 				struct drm_framebuffer *fb, struct drm_rect *rect) {
+ 	struct drm_gem_dma_object *dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
+@@ -493,6 +538,9 @@
+ 	       ili->base + LCDC_V4_TRANSFER_COUNT);
+ 	writel(CTRL_DATA_SELECT | CTRL_RUN, ili->base + LCDC_CTRL + REG_SET);
+ 
++	if (!ili->display_on)
++		brain_display_on(ili);
++
+ timeout_exit:
+ 	drm_dev_exit(idx);
+ }
+@@ -613,9 +661,10 @@
+ 	struct drm_device *drm;
+ 	struct brain_drm_private *ili;
+ 	struct resource *res;
+-	struct gpio_desc *en;
++	struct gpio_descs *en;
++	struct backlight_device *backlight;
+ 	u32 width, height;
+-	int i, ret;
++	int ret;
+ 
+ 	const struct of_device_id *of_id =
+ 		of_match_device(brain_of_match, &pdev->dev);
+@@ -630,6 +679,10 @@
+ 	if (of_id)
+ 		pdev->id_entry = of_id->data;
+ 
++	backlight = devm_of_find_backlight(&pdev->dev);
++	if (IS_ERR(backlight))
++		return PTR_ERR(backlight);
++
+ 	drm = drm_dev_alloc(&brain_driver, &pdev->dev);
+ 	if (IS_ERR(drm))
+ 		return PTR_ERR(drm);
+@@ -641,6 +694,7 @@
+ 	}
+ 
+ 	ili->pdev = pdev;
++	ili->backlight = backlight;
+ 	drm->dev_private = ili;
+ 
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+@@ -661,16 +715,17 @@
+ 	drm_mode_config_init(drm);
+ 	drm->mode_config.funcs = &brain_mode_config_funcs;
+ 
+-	for (i = 0; i < gpiod_count(&pdev->dev, "sharp,en"); i++) {
+-		en = devm_gpiod_get_index(&pdev->dev, "sharp,en", i, GPIOD_OUT_HIGH);
+-		if (IS_ERR(en))
+-			dev_err(&pdev->dev, "failed to get gpio %d\n", i);
+-			continue;
+-		ret = gpiod_direction_output(en, 1);
+-		if (IS_ERR(en))
+-			dev_err(&pdev->dev, "failed to output gpio %d\n", i);
++	/* sharp,en stay high; enable goes low while the display is off. */
++	en = devm_gpiod_get_array_optional(&pdev->dev, "sharp,en", GPIOD_OUT_HIGH);
++	if (IS_ERR(en))
++		dev_err(&pdev->dev, "failed to get the sharp,en gpios: %ld\n", PTR_ERR(en));
++
++	ili->enable = devm_gpiod_get_optional(&pdev->dev, "enable", GPIOD_OUT_HIGH);
++	if (IS_ERR(ili->enable)) {
++		dev_err(&pdev->dev, "failed to get the enable gpio: %ld\n", PTR_ERR(ili->enable));
++		ili->enable = NULL;
+ 	}
+-	
++
+ 	of_property_read_u32(ili->pdev->dev.of_node, "sharp,lcd-width", &width);
+ 	of_property_read_u32(ili->pdev->dev.of_node, "sharp,lcd-height", &height);
+ 

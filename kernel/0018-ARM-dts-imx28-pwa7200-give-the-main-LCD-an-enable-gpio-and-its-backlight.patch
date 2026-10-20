@@ -1,0 +1,24 @@
+From: brainux-pw-a9300
+Subject: [PATCH] ARM: dts: imx28-pwa7200: give the main LCD an enable gpio and its backlight
+
+Of the three sharp,en GPIOs, only GPIO0_27 makes a visible difference
+when low: the panel goes white, as if unpowered. GPIO0_26 and GPIO4_16
+change nothing that can be seen. Move GPIO0_27 to enable-gpios, so the
+driver lowers it while the display is off, and point the panel at its
+backlight, so the backlight goes off with the display.
+
+diff --git a/arch/arm/boot/dts/imx28-pwa7200.dts b/arch/arm/boot/dts/imx28-pwa7200.dts
+--- a/arch/arm/boot/dts/imx28-pwa7200.dts
++++ b/arch/arm/boot/dts/imx28-pwa7200.dts
+@@ -46,8 +46,10 @@
+ 
+ 	sharp,en-gpios =
+ 	<&gpio0 26 GPIO_ACTIVE_HIGH>,
+-	<&gpio0 27 GPIO_ACTIVE_HIGH>,
+ 	<&gpio4 16 GPIO_ACTIVE_HIGH>;
++	/* Low turns the panel white, i.e. unpowered */
++	enable-gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
++	backlight = <&backlight_display>;
+ };
+ 
+ &slcd {
