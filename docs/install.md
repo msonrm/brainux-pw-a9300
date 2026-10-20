@@ -54,13 +54,16 @@ git apply ../brainux-pw-a9300/kernel/0013-brain-kbd-i2c-read-keys-in-the-IRQ-thr
 git apply ../brainux-pw-a9300/kernel/0014-ALSA-dmaengine-synchronize-the-DMA-channel-after-drop.patch
 git apply ../brainux-pw-a9300/kernel/0015-dmaengine-mxs-dma-wait-for-a-terminated-cyclic-channel-to-stop.patch
 git apply ../brainux-pw-a9300/kernel/0016-drm-tiny-brain-lq050j1ug01-prefer-depth-16.patch
+git apply ../brainux-pw-a9300/kernel/0017-drm-tiny-brain-lq050j1ug01-power-the-panel-and-backlight-down-while-the-display-is-off.patch
+git apply ../brainux-pw-a9300/kernel/0018-ARM-dts-imx28-pwa7200-give-the-main-LCD-an-enable-gpio-and-its-backlight.patch
+git apply ../brainux-pw-a9300/kernel/0019-ARM-brain_defconfig-reserve-4-MiB-of-CMA-and-name-the-release.patch
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build brain_defconfig
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- O=../build -j8 zImage dtbs modules
 ```
 
-0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）。0004〜0007 はサブ液晶と枠のボタンのためで、subpaneld はこれを前提にしています。0004 はサブ液晶の 3 画素ごとに縦線が出るのを直し、0005・0006 はタッチが押されたまま固まるのを直し（タッチと電池の電圧を読む ADC が割り込みのフラグを取り合っていた）、0007 はメイン液晶の枠のしおり・Home・辞書メニューのボタンに F13〜F15 を割り当てます（DTS の変更なので DTB に入ります。どれも [subpanel.md](subpanel.md)）。0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするため（[audio-ymu818.md](audio-ymu818.md)）、0013 はキーボードのドライバが割り込みの中で I2C を読むのをやめ、同じ I2C0 にいる音のチップやタッチと読み書きが重なっても落ちないようにするためのものです（キーを押し続けながら音を鳴らし始めたり止めたりすると、カーネルが `scheduling while atomic` を出し、タッチが効かなくなることがありました）。0014・0015 は、音を止めてすぐ鳴らし直すと途切れ続けるのを直すためのものです（0014 は上流の ALSA の修正 3 本、0015 は DMA のドライバ。[stability.md](stability.md)）。0016 は、X をメイン液晶の DRM（`modesetting` ドライバ）で動かせるようにするためのものです（下の X の設定。[subpanel.md](subpanel.md) の「メイン液晶の枠のボタン」）。0009 は眠り方が `deep` のときだけ働きます（カーネルの既定は s2idle。下の「サスペンド」の設定で `deep` にします）。音だけでよければ 0001 だけでも動きます。
+0002 はバックライトを明るさ 0 やサスペンドで本当に消すため、0003 は蓋を閉じたら眠り、開けたら（またはキーで）起きるためのものです（起こすのに使った「入/切」は捨てます）。0004〜0007 はサブ液晶と枠のボタンのためで、subpaneld はこれを前提にしています。0004 はサブ液晶の 3 画素ごとに縦線が出るのを直し、0005・0006 はタッチが押されたまま固まるのを直し（タッチと電池の電圧を読む ADC が割り込みのフラグを取り合っていた）、0007 はメイン液晶の枠のしおり・Home・辞書メニューのボタンに F13〜F15 を割り当てます（DTS の変更なので DTB に入ります。どれも [subpanel.md](subpanel.md)）。0008 は眠って起きたあとも音が出るようにするため、0009 は `deep` で DRAM をセルフリフレッシュにして眠り、眠っていた時間を時計に足すため、0010 はメイン液晶が眠る前に送りを止めて起きたら初期化し直し、送りが止まっても自分で戻るようにするため（どれも [power.md](power.md)）、0011 はサブ液晶の SPI がときどき 10 秒止まるのを直す上流の修正（[subpanel.md](subpanel.md)）、0012 は音を出したまま眠ってもイヤホンにノイズが出ないようにするため（[audio-ymu818.md](audio-ymu818.md)）、0013 はキーボードのドライバが割り込みの中で I2C を読むのをやめ、同じ I2C0 にいる音のチップやタッチと読み書きが重なっても落ちないようにするためのものです（キーを押し続けながら音を鳴らし始めたり止めたりすると、カーネルが `scheduling while atomic` を出し、タッチが効かなくなることがありました）。0014・0015 は、音を止めてすぐ鳴らし直すと途切れ続けるのを直すためのものです（0014 は上流の ALSA の修正 3 本、0015 は DMA のドライバ。[stability.md](stability.md)）。0016 は、X をメイン液晶の DRM（`modesetting` ドライバ）で動かせるようにするためのものです（下の X の設定。[subpanel.md](subpanel.md) の「メイン液晶の枠のボタン」）。0017・0018 は、画面を消している間（X が何も触らないと約 10 分で消す）と眠っている間に、メイン液晶のパネルの電源（GPIO0_27）とバックライトを切るためのものです（0018 は DTS の変更なので DTB に入ります。[power.md](power.md)）。0019 は defconfig の変更で、CMA を 4 MB 取っておき、起動のときに X が画面のバッファを取れずに止まるのを防ぎます。CMA を入れるとモジュールの版の印が変わるので、カーネルの版の名前に `-pwa9300` をつけて、0019 の前のカーネルとモジュールの置き場所を分けます（[stability.md](stability.md) の 7）。0009 は眠り方が `deep` のときだけ働きます（カーネルの既定は s2idle。下の「サスペンド」の設定で `deep` にします）。音だけでよければ 0001 だけでも動きます。
 
-`git apply` で当てると、カーネルの版は `6.1.70-ga9f534c7f53e-dirty` になります。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。
+`git apply` で当てると、カーネルの版は `6.1.70-pwa9300-ga9f534c7f53e-dirty` になります（0019 を当てないと `6.1.70-ga9f534c7f53e-dirty`）。コミットすると版の名前が変わるので、手順 4 のモジュールも同じビルドから作ってください。0019 の前のカーネルに合わせて作ったモジュール（uinput・rtl8xxxu66 も）は、0019 のカーネルでは読み込めません（`disagrees about version of symbol`）。作り直して、新しい版の置き場所に入れてください。
 
 SD カードの boot パーティションで:
 
@@ -69,7 +72,7 @@ SD カードの boot パーティションで:
 
 rootfs パーティションで:
 
-3. `make ... modules_install INSTALL_MOD_PATH=<rootfs>` で `/usr/lib/modules/6.1.70-ga9f534c7f53e-dirty/` を作る（Chromebook のように rootfs に直接書けないときは、tar で固めてホームに置き、Brain で展開する）
+3. `make ... modules_install INSTALL_MOD_PATH=<rootfs>` で `/usr/lib/modules/6.1.70-pwa9300-ga9f534c7f53e-dirty/` を作る（Chromebook のように rootfs に直接書けないときは、tar で固めてホームに置き、Brain で展開する）
 4. `ymu818-brain.bin` を `/usr/lib/firmware/` に置く
 
 USB で PC とつないで使う人は、DTB を置いたあとで `sudo brain-config nonint do_usb peripheral` を実行してから再起動してください（新しい DTB は `dr_mode = "host"` です）。
@@ -77,7 +80,7 @@ USB で PC とつないで使う人は、DTB を置いたあとで `sudo brain-c
 起動したら:
 
 ```sh
-uname -r                      # 6.1.70-ga9f534c7f53e-dirty
+uname -r                      # 6.1.70-pwa9300-ga9f534c7f53e-dirty
 aplay -l                      # card 0: mxsymu818
 amixer sset Speaker 12
 amixer sset Headphone 8       # 起動時の alsactl init が 24 にする。イヤホンには大きい
