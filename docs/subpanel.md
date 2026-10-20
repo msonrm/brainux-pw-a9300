@@ -120,6 +120,7 @@ Brain では `/usr/local/bin/subpaneld`、`subpaneld.service`（`-v` で詳し�
   - 電池の段の決め方は [power-wince.md](power-wince.md) の「電池の見張りピン」に書いた（WinCE の解析とつながるので分けた）
   - 5V は `HW_POWER_STS` の VBUSVALID
 - 30 秒ごとに状態を読み、触っていないあいだは select で眠る。描画は 1 回 6〜33 ms
+- X がメイン液晶を消している間（DPMS。何も触らないと約 10 分）は、サブ液晶のバックライトも `bl_power` = 4 で消す（2026-10-20）。メイン液晶が消えているかは、DRM のコネクタの `/sys/class/drm/card0-DPI-1/dpms`（`On`/`Off`）で見る。メイン液晶のバックライトの `bl_power` も 4 になるが、蓋のとき（下）は subpaneld 自身がそこに書くので使わない。読むのは 30 秒ごとと、メイン液晶が消えている間にキーかタッチ（X を起こすもの）が来たら、そのあと 3 秒は 0.2 秒ごと。サブ液晶は、バックライトが消えても絵は残る
 - `subpaneld.service` は `Nice=-10`（眠る準備で logind・NetworkManager・systemd が CPU を使う間も、下の円が止まらないように。タッチパッドの反応にも効く）
 
 ### 入/切と眠り（2026-10-16）

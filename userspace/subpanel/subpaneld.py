@@ -37,6 +37,10 @@ Grabs the sub panel touch so X no longer sees it, and feeds a uinput mouse inste
   lid closing turns both backlights off until it opens. When the app lets go
   (or goes away) with the lid closed, logind sleeps then. The battery
   running out (the empty mark) is sent to the apps as "battery-empty".
+- The sub panel backlight goes off while X has the main display off (DPMS,
+  after about 10 minutes untouched: kernel/0017 then powers the panel and its
+  backlight down). Read from the connector every STATUS_POLL, and every
+  SCREEN_FAST for a few seconds after a key or a touch, which is what wakes X.
 Needs uinput.ko (kernel/uinput). Raw coordinates are in docs/subpanel.md.
 The sub panel only shows anything once X stops holding card1 (docs/subpanel.md).
 
@@ -50,6 +54,7 @@ JACK = "mxs_ymu818 Headphone"           # the headphone jack switch (ymu818)
 FB = "/dev/fb1"
 BACKLIGHT = "/sys/class/backlight/backlight@0"        # main display, 0-7
 SUB_BACKLIGHT = "/sys/class/backlight/backlight@1"    # sub panel, 0-3
+MAIN_DPMS = "/sys/class/drm/card0-DPI-1/dpms"         # main display: On / Off
 BRIGHTNESS_STEPS = [7, 5, 3, 1]
 SUB_BRIGHTNESS = {7: 3, 5: 2, 3: 1, 1: 1}            # sub panel follows the main one
 # The volume buttons move between 16 steps (and 0), the same for both outputs,
@@ -60,6 +65,7 @@ VOLUME_STEPS = {"Speaker": [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22,
                               27, 29, 31]}
 STEP_PX = 3
 STATUS_POLL = 30                     # seconds between battery/volume checks
+SCREEN_FAST, SCREEN_AFTER = 0.2, 3   # main display check after an input (s)
 VERBOSE = "-v" in sys.argv
 
 # Raw coordinates of the sub panel: displayed area is x 356-3435, the button
@@ -836,7 +842,9 @@ class PowerUI:
 
 
 class Apps:
-    """Apps that want the lid not to suspend (docstring at the top).
+    """Apps that want the lid not to suspend (docstring at the top), and the
+    backlights: both off for the lid, the sub panel's also while the main
+    display is off.
 
     The inhibitor is held by systemd-inhibit running cat: closing its stdin
     lets go, and so does this process going away."""
@@ -855,6 +863,10 @@ class Apps:
         self.hold = None            # systemd-inhibit while held
         self.lid = False            # closed
         self.dark = False           # backlights turned off by us
+        self.screen_off = False     # main display off (X's DPMS)
+        self.sub_dark = False       # sub panel backlight turned off by us
+        self.screen_next = 0        # when to read MAIN_DPMS next
+        self.screen_fast_until = 0
         self.empty = False          # battery-empty already sent
 
     def fds(self):
@@ -909,18 +921,46 @@ class Apps:
         self.lid = closed
         self.backlight()
 
+    def input(self, now):
+        """A key or a touch: X may be turning the main display on."""
+        if self.screen_off:
+            self.screen_fast_until = now + SCREEN_AFTER
+            self.screen_next = min(self.screen_next, now)
+
+    def screen_tick(self, now):
+        if now < self.screen_next:
+            return
+        fast = now < self.screen_fast_until
+        self.screen_next = now + (SCREEN_FAST if fast else STATUS_POLL)
+        try:
+            with open(MAIN_DPMS) as f:
+                off = f.read().strip() != "On"
+        except OSError:
+            return
+        if off != self.screen_off:
+            self.screen_off = off
+            log(f"main display {'off' if off else 'on'}")
+            self.backlight()
+
+    @staticmethod
+    def bl_power(bl, off):
+        try:
+            with open(f"{bl}/bl_power", "w") as f:
+                f.write("4" if off else "0")    # FB_BLANK_POWERDOWN / UNBLANK
+        except OSError as e:
+            log(f"{bl}: {e}")
+
     def backlight(self):
         dark = self.lid and self.hold is not None
-        if dark == self.dark:
-            return
-        self.dark = dark
-        for bl in (BACKLIGHT, SUB_BACKLIGHT):
-            try:
-                with open(f"{bl}/bl_power", "w") as f:
-                    f.write("4" if dark else "0")    # FB_BLANK_POWERDOWN / UNBLANK
-            except OSError as e:
-                log(f"{bl}: {e}")
-        log(f"backlights {'off' if dark else 'on'}")
+        if dark != self.dark:
+            self.dark = dark
+            self.bl_power(BACKLIGHT, dark)
+            log(f"main backlight {'off' if dark else 'on'}")
+        sub_dark = dark or self.screen_off
+        if sub_dark != self.sub_dark:
+            self.sub_dark = sub_dark
+            self.bl_power(SUB_BACKLIGHT, sub_dark)
+            log(f"sub backlight {'off' if sub_dark else 'on'}")
 
     def battery(self, bars):
         """Tell the apps once when the empty mark shows."""
@@ -1093,6 +1133,7 @@ def main():
                 wait = FRAME
             elif power.polling:
                 wait = min(wait, 0.2)
+            wait = min(wait, max(0.05, apps.screen_next - time.monotonic()))
             fds = [touch, main_touch, sig_r] + [d for d in (jack, kbd) if d is not None]
             r, _, _ = select.select(fds + apps.fds(), [], [], wait)
             now = time.monotonic()
@@ -1150,6 +1191,9 @@ def main():
             if st and st.up is not None and now - st.up >= REPRESS:
                 on_release(st, now, mouse, status)
                 st = None
+            if any(d in r for d in (kbd, touch, main_touch) if d is not None):
+                apps.input(now)
+            apps.screen_tick(now)
             apps.ready(r)
             check_long(st, now, mouse)
             if not power.animating:     # reading the volume runs amixer, slow on the Brain
