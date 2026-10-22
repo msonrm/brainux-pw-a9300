@@ -121,9 +121,10 @@ sudo install -D -m 755 userspace/subpanel/subpaneld.py /usr/local/bin/subpaneld
 sudo install -D -m 644 userspace/subpanel/subpaneld.service /etc/systemd/system/subpaneld.service
 sudo systemctl daemon-reload && sudo systemctl enable subpaneld
 cp ~/.jwmrc ~/.jwmrc.orig 2>/dev/null; cp system/home/user/.jwmrc ~/.jwmrc
+sudo sh system/setup-xkb.sh
 ```
 
-udev のルールと X の設定は、X がサブ液晶を開かないようにするもので、X が起動する前に要るので、入れたら再起動します。`xorg.conf` は、メイン液晶を Brainux の `fbdev` ドライバではなく `modesetting` ドライバで描くもので、画面の書き換えが 1 秒 20 回までという上限がなくなり、カーソルが滑らかに動きます。kernel/0016 が要ります（ないと X が文字の画面のまま止まります）。起動すると、サブ液晶にタッチパッドと右端の状態の帯（音量・明るさ・電池・USB 給電）が出ます。`.jwmrc` は、メイン液晶の枠の Home ボタン（F14）で JWM のメニューを開く設定と、窓の移動・リサイズを枠だけで描く設定です（Brainux の設定を読み込んだうえで足す形）。しおり（F13）と辞書メニュー（F15）、枠の右の 7 つのボタンは空けてあります。
+udev のルールと X の設定は、X がサブ液晶を開かないようにするもので、X が起動する前に要るので、入れたら再起動します。`xorg.conf` は、メイン液晶を Brainux の `fbdev` ドライバではなく `modesetting` ドライバで描くもので、画面の書き換えが 1 秒 20 回までという上限がなくなり、カーソルが滑らかに動きます。kernel/0016 が要ります（ないと X が文字の画面のまま止まります）。起動すると、サブ液晶にタッチパッドと右端の状態の帯（音量・明るさ・電池・USB 給電）が出ます。`.jwmrc` は、メイン液晶の枠の Home ボタン（F14）で JWM のメニューを開く設定と、窓の移動・リサイズを枠だけで描く設定です（Brainux の設定を読み込んだうえで足す形）。しおり（F13）と辞書メニュー（F15）、枠の右の 7 つのボタンは空けてあります。`setup-xkb.sh` は、枠の右の文字大・文字小（F21・F22）を X でも F21・F22 と呼ぶようにするもので、ないと X の標準のキーの配置ではタッチパッドの切り替えのキーになり、SDL のアプリに届きません。Brainux の xkb の rules（`/usr/share/X11/xkb/rules/evdev`）を `dpkg-divert` で `evdev.distrib` に退け、1 行足したものを置きます。xkb-data を更新したら、もう一度実行します。戻し方はスクリプトの頭に書いてあります。
 
 サスペンド（0002・0003 を当てたとき）:
 

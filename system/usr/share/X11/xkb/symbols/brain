@@ -1,0 +1,11 @@
+// Brain PW-A9300: the frame buttons 文字大・文字小 (subpaneld) send KEY_F21 and
+// KEY_F22. inet(evdev) makes them XF86TouchpadToggle and XF86TouchpadOn, which
+// SDL 2 does not know and drops, so give them back their own names. The other
+// keys keep the names inet(evdev) gives them (F14 is XF86Launch5 for JWM).
+// Used through the option brain:fkeys, which setup-xkb.sh adds to the rules evdev.
+
+partial function_keys
+xkb_symbols "fkeys" {
+    key <FK21> { [ F21 ] };
+    key <FK22> { [ F22 ] };
+};
