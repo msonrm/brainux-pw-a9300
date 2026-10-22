@@ -6,8 +6,11 @@
 #   inet(evdev) はレイアウトより後に重なるので、上書きは rules のオプションでしかできない。X の evdev の
 #   ドライバは rules を必ず「evdev」にする（別の名前の rules は使えない）ので、パッケージの rules/evdev を
 #   dpkg-divert で evdev.distrib に退け、そこに brain:fkeys の 1 行を足したものを rules/evdev に置く
-#   （xkb-data を更新しても、パッケージは evdev.distrib のほうを書き換える）。効くのは X を起動し直してから
-#   戻すとき: rm /etc/X11/xorg.conf.d/30-brain-fkeys.conf /usr/share/X11/xkb/rules/evdev &&
+#   （xkb-data を更新しても、パッケージは evdev.distrib のほうを書き換える）。
+#   xorg.conf.d の設定はキーボードごとに当たるが、X のまとめのキーボード（アプリが読むもの）は、ログインのあと
+#   どれかのキーを押すまで標準の配置のままなので、ログインしたときに setxkbmap で当てる（Xsession.d/45brain-fkeys。
+#   2026-10-23）。効くのは X を起動し直してから（ログインし直す）
+#   戻すとき: rm /etc/X11/xorg.conf.d/30-brain-fkeys.conf /etc/X11/Xsession.d/45brain-fkeys /usr/share/X11/xkb/rules/evdev &&
 #             dpkg-divert --remove --rename /usr/share/X11/xkb/rules/evdev
 set -eu
 cd "$(dirname "$0")"
@@ -20,3 +23,4 @@ run "dpkg-divert --quiet --add --rename --divert $RULES/evdev.distrib $RULES/evd
 run "install -D -m644 usr/share/X11/xkb/symbols/brain /usr/share/X11/xkb/symbols/brain"
 run "sed '/^! option[[:space:]]*=[[:space:]]*symbols/a\\  brain:fkeys\t\t\t=\t+brain(fkeys)' $RULES/evdev.distrib > $RULES/evdev.tmp && mv $RULES/evdev.tmp $RULES/evdev"
 run "install -D -m644 etc/X11/xorg.conf.d/30-brain-fkeys.conf /etc/X11/xorg.conf.d/30-brain-fkeys.conf"
+run "install -D -m644 etc/X11/Xsession.d/45brain-fkeys /etc/X11/Xsession.d/45brain-fkeys"

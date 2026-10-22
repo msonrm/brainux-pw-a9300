@@ -1,0 +1,15 @@
+# brainux-pw-a9300（setup-xkb.sh が置く。Xsession が sh で読み込む）
+# X のまとめのキーボード（core keyboard）にも brain:fkeys を当て、文字大・文字小（KEY_F21・F22）を F21・F22 にする。
+# xorg.conf.d/30-brain-fkeys.conf はキーボードごとに当たるが、まとめのキーボードは、ログインのあとどれかのキーを
+# 押すまで X の標準の配置のまま。その間に起動した SDL のアプリは F21・F22 を知らない表を作り、あとで押しても
+# 届かない（SDL は表を起動したときにしか作らない。2026-10-23、pmd-edit で見つけた）。
+# ほかのオプションがあれば残し、二重には足さない。
+if command -v setxkbmap >/dev/null 2>&1; then
+	_brain_opts=$(setxkbmap -query 2>/dev/null | sed -n 's/^options:[[:space:]]*//p')
+	case ",$_brain_opts," in
+	*,brain:fkeys,*) ;;
+	*) _brain_opts="${_brain_opts:+$_brain_opts,}brain:fkeys" ;;
+	esac
+	setxkbmap -option "" -option "$_brain_opts" || true
+	unset _brain_opts
+fi
